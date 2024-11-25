@@ -23,6 +23,10 @@ def parse_property(element_data: Dict) -> Dict:
         ValueError: If a parsing issue occurs.
     """
     try:
+        if not element_data or not element_data.get('element'):
+            logging.warning("Skipping empty or None element")
+            return None
+        
         property_data = {}
         html_string = element_data.get('element', '')
         soup = BeautifulSoup(html_string, 'lxml')
@@ -88,7 +92,7 @@ def parse_property(element_data: Dict) -> Dict:
     except Exception as e:
         logging.error("Error parsing property. Element data: %s", element_data)
         logging.error("Exception details: %s", e)
-        raise
+        return None
 
 def parse_browse_ai_response(browse_ai_data: Dict) -> List[Dict]:
     """
@@ -105,19 +109,13 @@ def parse_browse_ai_response(browse_ai_data: Dict) -> List[Dict]:
     """
     properties = []
     
-    # Iterate through tasks in the bulk run
     for task in browse_ai_data.get("robotTasks", {}).get("items", []):
         if task.get("status") == "successful":
-            # Extract elements from the captured list
             elements = task.get("capturedLists", {}).get("elements", [])
             
-            # Parse each element
             for element in elements:
-                try:
-                    parsed_property = parse_property(element)
+                parsed_property = parse_property(element)
+                if parsed_property is not None:  # N'ajoute que les propriétés valides
                     properties.append(parsed_property)
-                except Exception as e:
-                    logging.error("Error parsing a property: %s", e)
-                    continue
     
     return properties

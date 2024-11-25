@@ -2,9 +2,14 @@ import json
 import pandas as pd
 from datetime import datetime
 import logging
+import numpy as np
+import os
+from typing import Optional
 from browse_ai_client import BrowseAIClient
 from url_generator import generate_monthly_urls
 from data_parser import parse_browse_ai_response
+from geocoding import add_coordinates_to_df
+from price_estimator import AdaptivePriceEstimator
 
 # Configure logging
 logging.basicConfig(
@@ -108,16 +113,115 @@ def process_raw_data(data: dict, timestamp: str):
     logging.info("Processing raw data...")
     properties = parse_browse_ai_response(data)
     
-    # Create DataFrame and save
+    # Create DataFrame
     df = pd.DataFrame(properties)
+    
+    # Add geographic coordinates
+    logging.info("Adding geographic coordinates...")
+    df = add_coordinates_to_df(df)
+    
+    # Save to CSV
     output_file = f"parsed_data_{timestamp}.csv"
     df.to_csv(output_file, index=False)
     logging.info("Parsed data saved to file: %s", output_file)
     
-    # Display basic statistics
+    # Display statistics
     print("\nStatistics:")
     print(f"Number of properties: {len(properties)}")
+    print(f"Successfully geocoded: {len(df[df['longitude'].notna()])}")
     print(f"Available columns: {', '.join(df.columns)}")
+
+def estimate_prices_from_file(data_file: Optional[str] = None) -> None:
+    """
+    Estimate prices for properties in a CSV file and save the results to a new enriched file.
+
+    Args:
+        data_file (str, optional): Path to the input CSV file containing property data. 
+                                   If not provided, the user will be prompted to enter it.
+
+    Raises:
+        Exception: If an error occurs during the process.
+    """
+    reference_file = "reference_prices.csv"
+
+    try:
+        # Prompt for input file if not provided
+        if not data_file:
+            print("\nEnter the name of the CSV file with property data:")
+            data_file = input("File name: ")
+
+        # Generate output filename with a timestamp
+        base_name = os.path.splitext(data_file)[0]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"{base_name}_enriched_{timestamp}.csv"
+
+        # Load property data
+        logging.info("Loading property data from file: %s", data_file)
+        properties_df = pd.read_csv(data_file)
+
+        # Filter out rows with "Biens Multiples"
+        properties_df = properties_df[properties_df['property_type'] != 'Biens Multiples'].copy()
+        logging.info("Processing %d properties (excluding 'Biens Multiples')...", len(properties_df))
+
+        # Initialize the adaptive price estimator
+        estimator = AdaptivePriceEstimator(reference_file)
+
+        # Add columns for calculated metrics
+        properties_df['actual_price_per_m2'] = properties_df['price'] / properties_df['surface_area']
+        properties_df['reference_price_per_m2'] = None
+        properties_df['estimated_price_per_m2'] = None
+        properties_df['estimation_confidence'] = None
+        properties_df['comparable_count'] = 0
+
+        # Process each property in the DataFrame
+        total_properties = len(properties_df)
+        for idx, row in properties_df.iterrows():
+            if idx % 10 == 0:
+                logging.info("Progress: %d/%d properties processed", idx, total_properties)
+
+            # Convert row data to dictionary
+            property_data = row.to_dict()
+
+            # Retrieve reference price
+            ref_key = (property_data['city_name'], property_data['property_type'])
+            ref_price = estimator.reference_prices.get(ref_key)
+            if not ref_price:
+                ref_price = estimator.city_averages.get(property_data['city_name'])
+            properties_df.at[idx, 'reference_price_per_m2'] = ref_price
+
+            # Estimate price for the property
+            estimated_price, details = estimator.estimate_price(property_data, properties_df)
+
+            if estimated_price is not None:
+                properties_df.at[idx, 'estimated_price_per_m2'] = estimated_price / property_data['surface_area']
+                if isinstance(details, dict):
+                    properties_df.at[idx, 'estimation_confidence'] = details.get("confidence_score")
+                    properties_df.at[idx, 'comparable_count'] = details.get("comparable_count")
+
+        # Save the enriched results to a new CSV file
+        properties_df.to_csv(output_file, index=False)
+        logging.info("Enriched data successfully saved to: %s", output_file)
+
+        # Display summary statistics
+        print(f"\nResults saved to: {output_file}")
+        print(f"Total properties processed: {total_properties}")
+
+        print("\nPrice per m² Statistics:")
+        stats = properties_df[['actual_price_per_m2', 'reference_price_per_m2', 'estimated_price_per_m2']].describe()
+        print(stats)
+
+        # Calculate and display Mean Absolute Percentage Error (MAPE)
+        mape = np.mean(
+            np.abs(
+                (properties_df['actual_price_per_m2'] - properties_df['estimated_price_per_m2']) /
+                properties_df['actual_price_per_m2']
+            )
+        ) * 100
+        print(f"\nMean Absolute Percentage Error: {mape:.1f}%")
+
+    except Exception as e:
+        logging.error("An error occurred during price estimation: %s", e)
+        raise
 
 def display_menu() -> str:
     """
@@ -129,8 +233,9 @@ def display_menu() -> str:
     print("\n=== IMMO DATA SCRAPER ===")
     print("1. Execute full process (Browse AI + Parsing)")
     print("2. Parse data from an existing JSON file")
-    print("3. Quit")
-    return input("\nChoose an option (1-3): ")
+    print("3. Estimate prices from CSV file")
+    print("4. Quit")
+    return input("\nChoose an option (1-4): ")
 
 def main():
     """
@@ -148,6 +253,10 @@ def main():
             parse_from_file()
         
         elif choice == "3":
+            logging.info("Starting price estimation...")
+            estimate_prices_from_file()
+        
+        elif choice == "4":
             logging.info("Exiting program. Goodbye!")
             break
         
