@@ -9,7 +9,7 @@ from browse_ai_client import BrowseAIClient
 from url_generator import generate_monthly_urls
 from data_parser import parse_browse_ai_response
 from geocoding import add_coordinates_to_df
-from price_estimator import AdaptivePriceEstimator
+from price_estimator import GrowthPriceEstimator
 
 # Configure logging
 logging.basicConfig(
@@ -42,13 +42,7 @@ def run_full_process():
     """
     Execute the full process from URL generation to data parsing and saving.
     """
-    base_url = ("https://www.immo-data.fr/explorateur/transaction/recherche"
-                "?minprice=0&maxprice=25000000&minpricesquaremeter=0"
-                "&maxpricesquaremeter=40000&propertytypes=1%2C2%2C5"
-                "&minmonthyear=D%C3%A9cembre%202014&maxmonthyear=D%C3%A9cembre%202014"
-                "&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400"
-                "&minsurfaceland=0&maxsurfaceland=50000"
-                "&center=2.3540979812628393%3B48.845467949508645&zoom=15.130634442433555")
+    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?...')
     
     # Get dates from the user
     print("\nEnter the start and end dates (format: MM/YYYY):")
@@ -66,17 +60,22 @@ def run_full_process():
         logging.info("Starting scraping for %d URLs...", len(url_list))
         bulk_run_id = client.create_bulk_run(url_list)
         
-        # Wait and fetch results
+        # Wait for completion and fetch all results
         logging.info("Waiting for results...")
-        results = client.wait_for_bulk_run(bulk_run_id)
+        results = client.fetch_recent_results(
+            hours_back=1,  # Regarder seulement la dernière heure
+            check_interval=30  # Vérifier toutes les 30 secondes
+        )
         
-        # Save raw data
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        raw_data_file = save_raw_data(results, f"browse_ai_data_{timestamp}.json")
-        logging.info("Raw data saved to file: %s", raw_data_file)
-        
-        # Parse and save processed data
-        process_raw_data(results, timestamp)
+        if not results:
+            raise ValueError("No results retrieved")
+            
+        # Traiter les résultats
+        for result in results:
+            timestamp = datetime.fromtimestamp(result["createdAt"]/1000).strftime("%Y%m%d_%H%M%S")
+            
+            # Parse and save processed data
+            process_raw_data({"robotTasks": {"items": [result]}}, timestamp)
         
     except Exception as e:
         logging.error("An error occurred during the process: %s", e)
@@ -132,96 +131,145 @@ def process_raw_data(data: dict, timestamp: str):
     print(f"Available columns: {', '.join(df.columns)}")
 
 def estimate_prices_from_file(data_file: Optional[str] = None) -> None:
-    """
-    Estimate prices for properties in a CSV file and save the results to a new enriched file.
-
-    Args:
-        data_file (str, optional): Path to the input CSV file containing property data. 
-                                   If not provided, the user will be prompted to enter it.
-
-    Raises:
-        Exception: If an error occurs during the process.
-    """
     reference_file = "reference_prices.csv"
 
     try:
-        # Prompt for input file if not provided
         if not data_file:
-            print("\nEnter the name of the CSV file with property data:")
-            data_file = input("File name: ")
+            data_file = input("\nEnter the name of the CSV file with property data: ")
 
-        # Generate output filename with a timestamp
         base_name = os.path.splitext(data_file)[0]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = f"{base_name}_enriched_{timestamp}.csv"
 
-        # Load property data
-        logging.info("Loading property data from file: %s", data_file)
+        # Load and filter data
         properties_df = pd.read_csv(data_file)
-
-        # Filter out rows with "Biens Multiples"
         properties_df = properties_df[properties_df['property_type'] != 'Biens Multiples'].copy()
-        logging.info("Processing %d properties (excluding 'Biens Multiples')...", len(properties_df))
+        logging.info("Processing %d properties...", len(properties_df))
 
-        # Initialize the adaptive price estimator
-        estimator = AdaptivePriceEstimator(reference_file)
+        # Initialize estimator and calculate growth rates
+        estimator = GrowthPriceEstimator(reference_file)
+        estimator.calculate_growth_rates(properties_df)
 
-        # Add columns for calculated metrics
+        # Prepare result columns
         properties_df['actual_price_per_m2'] = properties_df['price'] / properties_df['surface_area']
-        properties_df['reference_price_per_m2'] = None
-        properties_df['estimated_price_per_m2'] = None
-        properties_df['estimation_confidence'] = None
-        properties_df['comparable_count'] = 0
+        properties_df['current_reference_price_per_m2'] = None
+        properties_df['estimated_current_price_per_m2'] = None
+        properties_df['cumulative_growth'] = None
 
-        # Process each property in the DataFrame
         total_properties = len(properties_df)
         for idx, row in properties_df.iterrows():
             if idx % 10 == 0:
                 logging.info("Progress: %d/%d properties processed", idx, total_properties)
 
-            # Convert row data to dictionary
-            property_data = row.to_dict()
+            try:
+                estimated_price, details = estimator.estimate_price(row.to_dict())
 
-            # Retrieve reference price
-            ref_key = (property_data['city_name'], property_data['property_type'])
-            ref_price = estimator.reference_prices.get(ref_key)
-            if not ref_price:
-                ref_price = estimator.city_averages.get(property_data['city_name'])
-            properties_df.at[idx, 'reference_price_per_m2'] = ref_price
+                if estimated_price is not None and isinstance(details, dict):
+                    properties_df.at[idx, 'estimated_current_price_per_m2'] = details['projected_price_m2']
+                    properties_df.at[idx, 'current_reference_price_per_m2'] = details['current_reference_price']
+                    
+                    # Calculate cumulative growth
+                    initial = details['initial_price_m2']
+                    final = details['projected_price_m2']
+                    if initial and final:
+                        cumulative_growth = ((final / initial) - 1) * 100
+                        properties_df.at[idx, 'cumulative_growth'] = cumulative_growth
 
-            # Estimate price for the property
-            estimated_price, details = estimator.estimate_price(property_data, properties_df)
+            except Exception as e:
+                logging.warning(f"Failed to estimate price for property {idx}: {str(e)}")
+                continue
 
-            if estimated_price is not None:
-                properties_df.at[idx, 'estimated_price_per_m2'] = estimated_price / property_data['surface_area']
-                if isinstance(details, dict):
-                    properties_df.at[idx, 'estimation_confidence'] = details.get("confidence_score")
-                    properties_df.at[idx, 'comparable_count'] = details.get("comparable_count")
+        # Create yearly means summary
+        yearly_means_data = []
+        for (city, prop_type), data in estimator.growth_rates.items():
+            row = {
+                'city': city,
+                'property_type': prop_type
+            }
+            # Add means for each year
+            row.update(data['yearly_means'])
+            yearly_means_data.append(row)
+            
+        yearly_means_df = pd.DataFrame(yearly_means_data)
 
-        # Save the enriched results to a new CSV file
+        # Save results
         properties_df.to_csv(output_file, index=False)
-        logging.info("Enriched data successfully saved to: %s", output_file)
+        yearly_means_df.to_csv(f"{base_name}_yearly_means_{timestamp}.csv", index=False)
+        
+        logging.info("Enriched data saved to: %s", output_file)
 
-        # Display summary statistics
+        # Print summary
         print(f"\nResults saved to: {output_file}")
         print(f"Total properties processed: {total_properties}")
+        print(f"Successful estimations: {len(properties_df.dropna(subset=['estimated_current_price_per_m2']))}")
+        
+        if len(properties_df) > 0:
+            print("\nPrice per m² Statistics:")
+            stats_df = properties_df[[
+                'actual_price_per_m2', 
+                'current_reference_price_per_m2',
+                'estimated_current_price_per_m2',
+                'cumulative_growth'
+            ]].describe()
+            print(stats_df)
 
-        print("\nPrice per m² Statistics:")
-        stats = properties_df[['actual_price_per_m2', 'reference_price_per_m2', 'estimated_price_per_m2']].describe()
-        print(stats)
-
-        # Calculate and display Mean Absolute Percentage Error (MAPE)
-        mape = np.mean(
-            np.abs(
-                (properties_df['actual_price_per_m2'] - properties_df['estimated_price_per_m2']) /
-                properties_df['actual_price_per_m2']
-            )
-        ) * 100
-        print(f"\nMean Absolute Percentage Error: {mape:.1f}%")
+            print("\nYearly Means Summary:")
+            print(yearly_means_df)
 
     except Exception as e:
-        logging.error("An error occurred during price estimation: %s", e)
+        logging.error("Error during price estimation: %s", e)
         raise
+
+def fetch_recent_manually():
+    """
+    Manually fetch and process recent Browse AI results.
+    Accumulates all results before processing.
+    """
+    try:
+        # Get hours to look back
+        print("\nHow many hours back do you want to look?")
+        hours = int(input("Hours (default 24): ") or "24")
+        
+        # Initialize Browse AI client
+        client = BrowseAIClient()
+        
+        # Fetch results
+        logging.info(f"Fetching results from the last {hours} hours...")
+        results = client.fetch_recent_results(
+            hours_back=hours,
+            check_interval=30
+        )
+        
+        if not results:
+            print("No results found in the specified time period.")
+            return
+            
+        # Display summary
+        print(f"\nFound {len(results)} successful tasks.")
+        print("\nDo you want to process these results? (y/n)")
+        choice = input().lower()
+        
+        if choice == 'y':
+            # Combine all results into one structure
+            combined_data = {
+                "robotTasks": {
+                    "items": results
+                }
+            }
+            
+            # Process combined results
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            logging.info("Processing all results together...")
+            process_raw_data(combined_data, timestamp)
+            
+            print("\nAll results have been processed together.")
+        else:
+            print("\nResults are saved in browse_ai_data directory but not processed.")
+            
+    except ValueError as e:
+        logging.error("Invalid input: %s", e)
+    except Exception as e:
+        logging.error("An error occurred: %s", e)
 
 def display_menu() -> str:
     """
@@ -234,8 +282,9 @@ def display_menu() -> str:
     print("1. Execute full process (Browse AI + Parsing)")
     print("2. Parse data from an existing JSON file")
     print("3. Estimate prices from CSV file")
-    print("4. Quit")
-    return input("\nChoose an option (1-4): ")
+    print("4. Fetch recent Browse AI results")
+    print("5. Quit")
+    return input("\nChoose an option (1-5): ")
 
 def main():
     """
@@ -257,6 +306,10 @@ def main():
             estimate_prices_from_file()
         
         elif choice == "4":
+            logging.info("Starting manual fetch of recent results...")
+            fetch_recent_manually()
+        
+        elif choice == "5":
             logging.info("Exiting program. Goodbye!")
             break
         

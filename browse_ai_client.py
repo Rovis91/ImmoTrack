@@ -2,6 +2,8 @@ import os
 import time
 import logging
 import requests
+import json
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from typing import List, Dict
 
@@ -129,3 +131,129 @@ class BrowseAIClient:
             except Exception as e:
                 logging.error("Error while waiting for bulk run completion: %s", e)
                 raise
+    
+    def fetch_recent_results(
+        self,
+        hours_back: int = 24,
+        output_dir: str = "browse_ai_data",
+        check_interval: int = 60
+    ) -> List[Dict]:
+        """
+        Fetch and save results from recent Browse AI searches with pagination.
+        
+        Args:
+            hours_back: Number of hours to look back
+            output_dir: Directory to save raw data
+            check_interval: Interval between status checks in seconds
+            
+        Returns:
+            List[Dict]: List of all successful tasks
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        start_time = int((datetime.now() - timedelta(hours=hours_back)).timestamp() * 1000)
+        
+        try:
+            # Get initial bulk runs list
+            logging.info(f"Fetching bulk runs from the last {hours_back} hours...")
+            all_bulk_runs = []
+            page = 1
+            
+            while True:
+                response = requests.get(
+                    f"{self.base_url}/{self.robot_id}/bulk-runs",
+                    headers=self.headers,
+                    params={"page": str(page)}
+                )
+                response.raise_for_status()
+                data = response.json()["result"]
+                
+                # Filter bulk runs by time
+                bulk_runs = [
+                    run for run in data["items"] 
+                    if run["createdAt"] >= start_time
+                ]
+                all_bulk_runs.extend(bulk_runs)
+                
+                if not data.get("hasMore", False):
+                    break
+                page += 1
+            
+            if not all_bulk_runs:
+                logging.info("No recent bulk runs found")
+                return []
+            
+            # Process each bulk run with pagination
+            all_results = []
+            for bulk_run in all_bulk_runs:
+                bulk_run_id = bulk_run["id"]
+                timestamp = datetime.fromtimestamp(bulk_run["createdAt"]/1000)
+                logging.info(f"Processing bulk run {bulk_run_id} from {timestamp}")
+                
+                # Wait until all tasks are complete
+                while True:
+                    current_page = 1
+                    bulk_run_tasks = []
+                    
+                    # Get all pages of tasks for this bulk run
+                    while True:
+                        response = requests.get(
+                            f"{self.base_url}/{self.robot_id}/bulk-runs/{bulk_run_id}",
+                            headers=self.headers,
+                            params={"page": str(current_page)}
+                        )
+                        response.raise_for_status()
+                        run_data = response.json()["result"]
+                        
+                        tasks = run_data["robotTasks"]["items"]
+                        bulk_run_tasks.extend(tasks)
+                        
+                        if not run_data["robotTasks"].get("hasMore", False):
+                            break
+                        current_page += 1
+                    
+                    # Check if all tasks are complete
+                    pending_tasks = [
+                        task for task in bulk_run_tasks 
+                        if task["status"] not in ["successful", "failed"]
+                    ]
+                    
+                    if not pending_tasks:
+                        # Save complete bulk run data
+                        output_file = os.path.join(
+                            output_dir,
+                            f"browse_ai_data_{bulk_run_id}_{timestamp:%Y%m%d_%H%M%S}.json"
+                        )
+                        
+                        complete_data = {
+                            "bulkRun": bulk_run,
+                            "robotTasks": {
+                                "totalCount": len(bulk_run_tasks),
+                                "items": bulk_run_tasks
+                            }
+                        }
+                        
+                        with open(output_file, 'w', encoding='utf-8') as f:
+                            json.dump(complete_data, f, indent=2)
+                        
+                        logging.info(f"Saved data to {output_file}")
+                        
+                        # Add successful tasks to results
+                        successful_tasks = [
+                            task for task in bulk_run_tasks 
+                            if task["status"] == "successful"
+                        ]
+                        all_results.extend(successful_tasks)
+                        break
+                    
+                    logging.info(f"Waiting for {len(pending_tasks)} tasks to complete...")
+                    time.sleep(check_interval)
+            
+            logging.info(f"Retrieved {len(all_results)} successful tasks from {len(all_bulk_runs)} bulk runs")
+            return all_results
+        
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API request failed: {e}")
+            raise
+        except Exception as e:
+            logging.error(f"An error occurred: {e}")
+            raise
