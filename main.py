@@ -6,10 +6,10 @@ import numpy as np
 import os
 from typing import Optional
 from browse_ai_client import BrowseAIClient
-from url_generator import generate_monthly_urls
 from data_parser import parse_browse_ai_response
 from geocoding import add_coordinates_to_df
 from price_estimator import GrowthPriceEstimator
+from url_generator import UrlGenerator, SearchType
 
 # Configure logging
 logging.basicConfig(
@@ -39,21 +39,34 @@ def save_raw_data(data: dict, filename: str = None) -> str:
     return filename
 
 def run_full_process():
-    """
-    Execute the full process from URL generation to data parsing and saving.
-    """
-    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?...')
+    """Execute the full process from URL generation to data parsing and saving."""
+    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=4%2C0%2C5%2C2%2C1&minmonthyear=Mai%202024&maxmonthyear=Juin%202024&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=3.178897646468954%3B50.68687158514737&zoom=13.059885316477079')
     
-    # Get dates from the user
-    print("\nEnter the start and end dates (format: MM/YYYY):")
-    start_date = input("Start date: ")
-    end_date = input("End date: ")
+    # Initialize URL generator
+    url_generator = UrlGenerator()
+    
+    # Display search types and get user choice
+    url_generator.display_search_types()
+    while True:
+        try:
+            choice = int(input("\nChoisissez un type de recherche (1-4): "))
+            if 1 <= choice <= 4:
+                search_type = list(SearchType)[choice-1]
+                break
+            print("Choix invalide. Veuillez choisir un nombre entre 1 et 4.")
+        except ValueError:
+            print("Veuillez entrer un nombre valide.")
+    
+    # Get dates
+    start_date, end_date = url_generator.get_dates()
     
     try:
         # Generate URLs
         logging.info("Generating URLs...")
-        urls = generate_monthly_urls(base_url, start_date, end_date)
+        urls = url_generator.generate_urls(base_url, start_date, end_date, search_type)
         url_list = [url for url, _ in urls]
+        
+        logging.info(f"Generated {len(url_list)} URLs for {search_type.description}")
         
         # Initialize Browse AI client
         client = BrowseAIClient()
