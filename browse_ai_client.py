@@ -114,24 +114,50 @@ class BrowseAIClient:
 
         Returns:
             Dict: The final status of the bulk run.
-
-        Raises:
-            requests.HTTPError: If the API request fails during status checks.
         """
         logging.info("Waiting for bulk run ID: %s to complete.", bulk_run_id)
         
         while True:
             try:
-                status = self.get_bulk_run_status(bulk_run_id)
-                if all(task.get("status") == "successful" for task in status["robotTasks"]["items"]):
+                # Get all pages of tasks for this bulk run
+                all_tasks = []
+                current_page = 1
+                
+                while True:
+                    response = requests.get(
+                        f"{self.base_url}/{self.robot_id}/bulk-runs/{bulk_run_id}",
+                        headers=self.headers,
+                        params={"page": str(current_page)}
+                    )
+                    response.raise_for_status()
+                    run_data = response.json()["result"]
+                    
+                    tasks = run_data["robotTasks"]["items"]
+                    all_tasks.extend(tasks)
+                    
+                    if not run_data["robotTasks"].get("hasMore", False):
+                        break
+                    current_page += 1
+                
+                # Check if all tasks are complete (either successful or failed)
+                pending_tasks = [
+                    task for task in all_tasks 
+                    if task["status"] not in ["successful", "failed"]
+                ]
+                
+                if not pending_tasks:
                     logging.info("Bulk run completed successfully.")
-                    return status
-                logging.info("Bulk run not complete. Checking again in %d seconds.", check_interval)
+                    return run_data
+                    
+                total_tasks = len(all_tasks)
+                completed_tasks = len(all_tasks) - len(pending_tasks)
+                logging.info(f"Progress: {completed_tasks}/{total_tasks} tasks completed. Checking again in {check_interval} seconds.")
                 time.sleep(check_interval)
+                
             except Exception as e:
                 logging.error("Error while waiting for bulk run completion: %s", e)
                 raise
-    
+            
     def fetch_recent_results(
         self,
         hours_back: int = 24,

@@ -40,7 +40,7 @@ def save_raw_data(data: dict, filename: str = None) -> str:
 
 def run_full_process():
     """Execute the full process from URL generation to data parsing and saving."""
-    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=4%2C0%2C5%2C2%2C1&minmonthyear=Mai%202024&maxmonthyear=Juin%202024&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=3.178897646468954%3B50.68687158514737&zoom=13.059885316477079')
+    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=0%2C1%2C2%2C4%2C5&minmonthyear=Janvier%202014&maxmonthyear=Juin%202024&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=3.180910539744673%3B50.68055296668393&zoom=14.050166203507997')
     
     # Initialize URL generator
     url_generator = UrlGenerator()
@@ -71,24 +71,31 @@ def run_full_process():
         # Initialize Browse AI client
         client = BrowseAIClient()
         logging.info("Starting scraping for %d URLs...", len(url_list))
+        
+        # Create bulk run
         bulk_run_id = client.create_bulk_run(url_list)
+        logging.info("Bulk run created with ID: %s", bulk_run_id)
         
-        # Wait for completion and fetch all results
-        logging.info("Waiting for results...")
-        results = client.fetch_recent_results(
-            hours_back=1,  # Regarder seulement la dernière heure
-            check_interval=30  # Vérifier toutes les 30 secondes
-        )
+        # Wait for completion and get results
+        logging.info("Waiting for bulk run to complete...")
+        full_results = client.wait_for_bulk_run(bulk_run_id)
         
-        if not results:
-            raise ValueError("No results retrieved")
-            
-        # Traiter les résultats
-        for result in results:
-            timestamp = datetime.fromtimestamp(result["createdAt"]/1000).strftime("%Y%m%d_%H%M%S")
-            
-            # Parse and save processed data
-            process_raw_data({"robotTasks": {"items": [result]}}, timestamp)
+        if not full_results or 'robotTasks' not in full_results:
+            raise ValueError("No valid results retrieved")
+        
+        # Process results
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        data_to_process = {
+            "robotTasks": {
+                "items": [task for task in full_results["robotTasks"]["items"] if task["status"] == "successful"]
+            }
+        }
+        
+        successful_tasks = len(data_to_process["robotTasks"]["items"])
+        total_tasks = len(full_results["robotTasks"]["items"])
+        logging.info(f"Processing {successful_tasks} successful tasks out of {total_tasks} total tasks")
+        
+        process_raw_data(data_to_process, timestamp)
         
     except Exception as e:
         logging.error("An error occurred during the process: %s", e)
@@ -286,10 +293,7 @@ def fetch_recent_manually():
 
 def display_menu() -> str:
     """
-    Display the main menu and get the user's choice.
-
-    Returns:
-        str: The user's choice.
+    Display the main menu and get user's choice.
     """
     print("\n=== IMMO DATA SCRAPER ===")
     print("1. Execute full process (Browse AI + Parsing)")
