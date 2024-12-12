@@ -7,7 +7,7 @@ import os
 from typing import Optional
 from browse_ai_client import BrowseAIClient
 from data_parser import parse_browse_ai_response
-from geocoding import add_coordinates_to_df
+from address_enrichment import add_coordinates_to_df
 from price_estimator import GrowthPriceEstimator
 from url_generator import UrlGenerator, SearchType
 
@@ -40,7 +40,7 @@ def save_raw_data(data: dict, filename: str = None) -> str:
 
 def run_full_process():
     """Execute the full process from URL generation to data parsing and saving."""
-    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=0%2C1%2C2%2C4%2C5&minmonthyear=Janvier%202014&maxmonthyear=Juin%202024&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=3.180910539744673%3B50.68055296668393&zoom=14.050166203507997')
+    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=1%2C2%2C4%2C0%2C5&minmonthyear=Janvier%202014&maxmonthyear=Janvier%202014&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=0.4358366054598264%3B46.47338459963919&zoom=12')
     
     # Initialize URL generator
     url_generator = UrlGenerator()
@@ -124,6 +124,7 @@ def parse_from_file():
 def process_raw_data(data: dict, timestamp: str):
     """
     Process raw data, parse it, and save to a CSV file.
+    Also adds new cities to reference_prices.csv.
 
     Args:
         data (dict): Raw data from Browse AI.
@@ -149,6 +150,51 @@ def process_raw_data(data: dict, timestamp: str):
     print(f"Number of properties: {len(properties)}")
     print(f"Successfully geocoded: {len(df[df['longitude'].notna()])}")
     print(f"Available columns: {', '.join(df.columns)}")
+    
+    # Process cities for reference prices
+    logging.info("Analyzing cities for reference prices...")
+    
+    # Filter out empty or null city names
+    valid_cities = set(df['city_name'].dropna().unique()) - {''}
+    
+    # Read existing reference prices
+    reference_file = "reference_prices.csv"
+    try:
+        existing_ref = pd.read_csv(reference_file)
+        existing_cities = set(existing_ref['city_name'])
+    except FileNotFoundError:
+        existing_ref = pd.DataFrame(columns=['city_name', 'property_type', 'price_per_m2'])
+        existing_cities = set()
+        logging.warning(f"Reference file {reference_file} not found. Creating new file.")
+    
+    # Get new valid cities
+    new_cities = valid_cities - existing_cities
+    
+    if new_cities:
+        print("\nAjout des nouvelles villes à reference_prices.csv:")
+        for city in sorted(new_cities):
+            print(f"- {city}")
+        
+        # Create new entries
+        new_entries = []
+        for city in new_cities:
+            new_entries.extend([
+                {'city_name': city, 'property_type': 'Appartement', 'price_per_m2': ''},
+                {'city_name': city, 'property_type': 'Maison', 'price_per_m2': ''}
+            ])
+        
+        # Add new entries to existing reference data
+        updated_ref = pd.concat([
+            existing_ref,
+            pd.DataFrame(new_entries)
+        ], ignore_index=True)
+        
+        # Save updated reference prices
+        updated_ref.to_csv(reference_file, index=False)
+        logging.info(f"Updated {reference_file} with {len(new_cities)} new cities")
+        print(f"\nFichier {reference_file} mis à jour avec {len(new_cities)} nouvelles villes")
+    else:
+        print("\nAucune nouvelle ville à ajouter au fichier de référence.")    
 
 def estimate_prices_from_file(data_file: Optional[str] = None) -> None:
     reference_file = "reference_prices.csv"
