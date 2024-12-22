@@ -5,11 +5,11 @@ import logging
 import numpy as np
 import os
 from typing import Optional
-from browse_ai_client import BrowseAIClient
+from browse_ai.browse_ai_client import BrowseAIClient
 from data_parser import parse_browse_ai_response
-from address_enrichment import add_coordinates_to_df
+from address_enrichment import enrich_address_data
 from price_estimator import GrowthPriceEstimator
-from url_generator import UrlGenerator, SearchType
+from src.url_generator import UrlGenerator, SearchType
 
 # Configure logging
 logging.basicConfig(
@@ -40,7 +40,7 @@ def save_raw_data(data: dict, filename: str = None) -> str:
 
 def run_full_process():
     """Execute the full process from URL generation to data parsing and saving."""
-    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=1%2C2%2C4%2C0%2C5&minmonthyear=Janvier%202014&maxmonthyear=Janvier%202014&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=0.4358366054598264%3B46.47338459963919&zoom=12')
+    base_url = ('https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=1&minmonthyear=Octobre%202014&maxmonthyear=Octobre%202014&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=0.3293609303041194%3B46.575229268622195&zoom=12.151412188068159')
     
     # Initialize URL generator
     url_generator = UrlGenerator()
@@ -138,7 +138,7 @@ def process_raw_data(data: dict, timestamp: str):
     
     # Add geographic coordinates
     logging.info("Adding geographic coordinates...")
-    df = add_coordinates_to_df(df)
+    df = enrich_address_data(df)
     
     # Save to CSV
     output_file = f"parsed_data_{timestamp}.csv"
