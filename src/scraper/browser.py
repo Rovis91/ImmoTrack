@@ -1,86 +1,99 @@
+"""
+Browser management using Playwright for property scraping.
+"""
+
 import asyncio
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 from playwright.async_api import async_playwright, Browser, Page, Playwright
-from .config import ScraperConfig
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
 class BrowserManager:
-    """Manages browser instance and page interactions."""
+    """
+    Manages browser instance and page interactions for scraping.
     
-    def __init__(self):
+    Attributes:
+        config: Configuration object with browser settings
+    """
+    
+    def __init__(self, config: Config):
+        """
+        Initialize browser manager.
+        
+        Args:
+            config: Configuration object containing browser settings
+        """
+        self.config = config
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._page: Optional[Page] = None
         self._context = None
         
     async def _initialize_playwright(self) -> None:
-        """Initialize Playwright instance."""
+        """Initialize Playwright instance if not already initialized."""
         if not self._playwright:
             logger.debug("Initializing Playwright")
             self._playwright = await async_playwright().start()
             
     async def connect(self) -> None:
-        """Connect to Bright Data's browser endpoint."""
+        """
+        Initialize browser session with configured settings.
+        
+        Raises:
+            RuntimeError: If Playwright initialization fails
+        """
         try:
             await self._initialize_playwright()
             
             if not self._playwright:
                 raise RuntimeError("Failed to initialize Playwright")
             
-            logger.info("Connecting to browser endpoint...")
+            logger.info("Launching browser...")
             
-            # Configuration pour ignorer robots.txt
-            self._browser = await self._playwright.chromium.connect_over_cdp(
-                endpoint_url=ScraperConfig.BROWSER_ENDPOINT,
-                timeout=ScraperConfig.DEFAULT_TIMEOUT,
+            # Launch browser with configured settings
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.config.browser.headless
             )
             
-            # Créer un nouveau contexte avec les options personnalisées
+            # Create context with custom settings
             self._context = await self._browser.new_context(
-                ignore_https_errors=True,
-                bypass_csp=True,
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                user_agent=self.config.browser.user_agent,
+                viewport={
+                    'width': self.config.browser.viewport_width,
+                    'height': self.config.browser.viewport_height
+                }
             )
             
-            # Activer l'interception des requêtes pour ignorer robots.txt
-            await self._context.route("**/*", lambda route: route.continue_())
-            
-            # Créer une nouvelle page
+            # Create new page with configured timeouts
             self._page = await self._context.new_page()
+            self._page.set_default_timeout(self.config.browser.default_timeout)
+            self._page.set_default_navigation_timeout(self.config.browser.navigation_timeout)
             
-            # Configurer les timeouts
-            self._page.set_default_timeout(ScraperConfig.DEFAULT_TIMEOUT)
-            self._page.set_default_navigation_timeout(ScraperConfig.NAVIGATION_TIMEOUT)
-            
-            logger.info("Successfully connected to browser endpoint")
+            logger.info("Browser launched successfully")
             
         except Exception as e:
-            logger.error(f"Failed to connect to browser: {str(e)}")
+            logger.error(f"Failed to launch browser: {str(e)}")
             await self.close()
             raise
             
     async def close(self) -> None:
-        """Close all browser resources in correct order."""
+        """Clean up browser resources."""
         try:
             if self._page:
-                logger.debug("Closing page")
                 await self._page.close()
                 self._page = None
                 
             if self._context:
-                logger.debug("Closing context")
                 await self._context.close()
                 self._context = None
                 
             if self._browser:
-                logger.debug("Closing browser")
                 await self._browser.close()
                 self._browser = None
                 
             if self._playwright:
-                logger.debug("Stopping Playwright")
                 await self._playwright.stop()
                 self._playwright = None
                 
@@ -89,15 +102,67 @@ class BrowserManager:
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
             
-    async def get_properties(self, url: str) -> List[str]:
+    async def _extract_property_data(self, element) -> Optional[Dict[str, Any]]:
         """
-        Fetch properties from a given URL.
+        Extract structured data from a property element.
+        
+        Args:
+            element: Playwright element representing a property
+            
+        Returns:
+            Dictionary with extracted property data or None if extraction fails
+        """
+        try:
+            selectors = self.config.selectors
+            data = {}
+            
+            # Extract address and city
+            address_element = await element.query_selector(selectors.address)
+            if address_element:
+                address_text = await address_element.text_content()
+                if ' - ' in address_text:
+                    address, city = address_text.rsplit(' - ', 1)
+                    data['complete_address'] = address.strip()
+                    data['city_name'] = city.strip()
+                else:
+                    data['complete_address'] = address_text.strip()
+                    data['city_name'] = ""
+            
+            # Extract price
+            price_element = await element.query_selector(selectors.price)
+            if price_element:
+                price_text = await price_element.text_content()
+                price = ''.join(c for c in price_text if c.isdigit())
+                data['price'] = int(price) if price else None
+            
+            # Extract details (rooms, surface)
+            details_element = await element.query_selector(selectors.details)
+            if details_element:
+                details_text = await details_element.text_content()
+                # Add details parsing logic here
+            
+            # Store original HTML
+            data['html'] = await element.inner_html()
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error extracting property data: {str(e)}")
+            return None
+            
+    async def get_properties(self, url: str, retry_count: int = 0) -> List[Dict[str, Any]]:
+        """
+        Fetch and parse properties from a given URL.
         
         Args:
             url: URL to scrape
+            retry_count: Current retry attempt number
             
         Returns:
-            List of HTML strings for each property found
+            List of dictionaries containing property data
+            
+        Raises:
+            RuntimeError: If browser is not initialized
         """
         if not self._page:
             raise RuntimeError("Browser not initialized. Call connect() first.")
@@ -108,12 +173,12 @@ class BrowserManager:
             # Navigate to page
             logger.info(f"Navigating to {url}")
             await self._page.goto(url, wait_until='networkidle')
+            await asyncio.sleep(5)  # Let dynamic content load
             
-            # Wait for property list to load
-            logger.debug("Waiting for property list")
+            # Wait for property list
             property_list = await self._page.wait_for_selector(
-                ScraperConfig.SELECTORS['property_list'],
-                timeout=ScraperConfig.DEFAULT_TIMEOUT
+                self.config.selectors.property_list,
+                timeout=self.config.browser.default_timeout
             )
             
             if not property_list:
@@ -122,24 +187,21 @@ class BrowserManager:
             
             # Get all property elements
             property_elements = await self._page.query_selector_all(
-                ScraperConfig.SELECTORS['property_item']
+                self.config.selectors.property_item
             )
             
-            # Extract HTML for each property
+            # Extract data from each property
             for element in property_elements:
-                try:
-                    html = await element.inner_html()
-                    if html:
-                        properties.append(html)
-                except Exception as e:
-                    logger.error(f"Error extracting property HTML: {str(e)}")
-                    continue
+                data = await self._extract_property_data(element)
+                if data:
+                    properties.append(data)
             
+            # Log results
             properties_count = len(properties)
-            if properties_count == 100:
-                logger.info(f"Found maximum number of properties (100) for URL: {url}")
+            if properties_count == self.config.scraping.elements_limit:
+                logger.info(f"Found maximum number of properties ({properties_count}) for URL: {url}")
             elif properties_count > 0:
-                logger.warning(f"Found {properties_count} properties (less than 100) for URL: {url}")
+                logger.info(f"Found {properties_count} properties for URL: {url}")
             else:
                 logger.warning(f"No properties found for URL: {url}")
                 
@@ -147,6 +209,13 @@ class BrowserManager:
             
         except Exception as e:
             logger.error(f"Error fetching properties from {url}: {str(e)}")
+            
+            # Retry logic
+            if retry_count < self.config.scraping.max_retries:
+                logger.info(f"Retrying ({retry_count + 1}/{self.config.scraping.max_retries})")
+                await asyncio.sleep(self.config.scraping.retry_delay / 1000)  # Convert to seconds
+                return await self.get_properties(url, retry_count + 1)
+                
             raise
             
     async def __aenter__(self):
