@@ -1,31 +1,28 @@
-import logging
-from src.cli import Menu, MenuOption, CommandHandler
+# main.py
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+import asyncio
+import logging
+from pathlib import Path
+from src.cli.menu import Menu
+
+def setup_logging():
+    """Configure logging for the application."""
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler(log_dir / "app.log"),
+            logging.StreamHandler()
+        ]
+    )
 
 def main():
-    """Main function to run the application."""
+    setup_logging()
     menu = Menu()
-    
-    # Register command handlers
-    menu.register_handler(MenuOption.FULL_PROCESS, CommandHandler.handle_full_process)
-    menu.register_handler(MenuOption.PARSE_FILE, CommandHandler.handle_parse_file)
-    menu.register_handler(MenuOption.ESTIMATE_PRICES, CommandHandler.handle_estimate_prices)
-    menu.register_handler(MenuOption.FETCH_RECENT, CommandHandler.handle_fetch_recent)
-    
-    while True:
-        choice = menu.display()
-        if not menu.handle_choice(choice):
-            break
+    asyncio.run(menu.start())
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        logging.info("Program interrupted by user.")
-    except Exception as e:
-        logging.error("An unexpected error occurred: %s", e)
+    main()

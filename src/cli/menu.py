@@ -1,52 +1,67 @@
-from enum import Enum
-import logging
-from typing import Callable, Dict
+import json
+from pathlib import Path
+from typing import Optional, Dict
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt, Confirm
+from rich.table import Table
+from .command_handlers import start_scraping
 
-class MenuOption(Enum):
-    FULL_PROCESS = "1"
-    PARSE_FILE = "2"
-    ESTIMATE_PRICES = "3"
-    FETCH_RECENT = "4"
-    QUIT = "5"
+console = Console()
 
 class Menu:
     def __init__(self):
-        self.handlers: Dict[MenuOption, Callable] = {}
-
-    def register_handler(self, option: MenuOption, handler: Callable) -> None:
-        """Register a handler function for a menu option."""
-        self.handlers[option] = handler
-
-    def display(self) -> str:
-        """Display the main menu and get user's choice."""
-        print("\n=== IMMO DATA SCRAPER ===")
-        print("1. Execute full process")
-        print("2. Parse data from an existing JSON file")
-        print("3. Estimate prices from CSV file")
-        print("4. Fetch recent Browse AI results")
-        print("5. Quit")
-        return input("\nChoose an option (1-5): ")
-
-    def handle_choice(self, choice: str) -> bool:
-        """
-        Handle the user's menu choice.
+        self.console = Console()
         
-        Returns:
-            bool: False if the program should quit, True otherwise.
-        """
+    def _display_header(self):
+        self.console.print(Panel.fit(
+            "[bold blue]TrackImmo Scraper[/bold blue]\n"
+            "[dim]Property data collection tool[/dim]"
+        ))
+        
+    def _load_config(self, config_path: str) -> Optional[Dict]:
         try:
-            option = MenuOption(choice)
-            if option == MenuOption.QUIT:
-                logging.info("Exiting program. Goodbye!")
-                return False
-                
-            if option in self.handlers:
-                self.handlers[option]()
-                input("\nPress Enter to continue...")
-                return True
-                
-        except ValueError:
-            logging.warning("Invalid option. Please try again.")
-            return True
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            self.console.print(f"[red]Error loading config: {str(e)}[/red]")
+            return None
             
-        return True
+    async def start(self):
+        while True:
+            self._display_header()
+            
+            self.console.print("\n[yellow]Available Actions:[/yellow]")
+            table = Table(show_header=False, box=None)
+            table.add_row("[1]", "Start scraping with config")
+            table.add_row("[q]", "Quit")
+            self.console.print(table)
+            
+            choice = Prompt.ask("\nChoose an action", choices=["1", "q"])
+            
+            if choice == "q":
+                break
+                
+            if choice == "1":
+                config_path = Prompt.ask(
+                    "Enter config file path",
+                    default="config/scraping_config.json"
+                )
+                
+                config = self._load_config(config_path)
+                if config:
+                    confirm = Confirm.ask("Start scraping with loaded config?")
+                    if confirm:
+                        try:
+                            result = await start_scraping(config)
+                            if result:
+                                self.console.print(
+                                    f"[green]Scraping completed. Results saved to: {result}[/green]"
+                                )
+                            else:
+                                self.console.print("[red]Scraping failed[/red]")
+                        except Exception as e:
+                            self.console.print(f"[red]Error during scraping: {str(e)}[/red]")
+                
+            self.console.print("\nPress Enter to continue...")
+            input()
