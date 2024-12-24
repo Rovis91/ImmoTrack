@@ -1,7 +1,6 @@
 """
 Base scraper that can use either Browse AI or manual scraping strategy.
 """
-# src/scraper/base_scraper.py
 
 from pathlib import Path
 from datetime import datetime
