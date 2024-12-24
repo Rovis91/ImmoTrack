@@ -52,10 +52,8 @@ class Scraper:
             self.output_file = Path(output_file)
         else:
             timestamp = current_date.strftime("%Y%m%d_%H%M%S")
-            self.output_file = Path(self.config.scraping.output_dir) / f"scraping_{timestamp}.json"
-        
-        self.state = ScraperType.MANUAL
-        
+            self.output_file = Path(self.config.scraping.output_dir) / f"scraping_{timestamp}.json"        
+
     async def _init_output_file(self, urls: list) -> None:
         """Initialize output file with metadata."""
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -88,23 +86,35 @@ class Scraper:
                 self.search_type
             )
             
-            # Initialize output
-            await self._init_output_file([url for url, _ in urls])
-            
             if self.scraper_type == ScraperType.MANUAL:
+                results = []
+                
+                # Ensure output directory exists
+                self.output_file.parent.mkdir(parents=True, exist_ok=True)
+                
                 async with BrowserManager(self.config) as browser:
-                    results = []
                     for url, limit in urls:
-                        properties = await browser.get_properties(url)
-                        results.append({
-                            'url': url,
-                            'timestamp': datetime.now().isoformat(),
-                            'properties': properties
-                        })
+                        try:
+                            # Collect HTML elements
+                            properties_html = await browser.get_properties(url)
+                            
+                            # Add to results
+                            results.append({
+                                'url': url,
+                                'timestamp': int(datetime.now().timestamp()),
+                                'count': len(properties_html),
+                                'properties': [
+                                    {'html': html} for html in properties_html
+                                ]
+                            })
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing URL {url}: {str(e)}")
+                            continue
                     
-                    # Save final results
+                    # Save results
                     output_data = {
-                        'scraping_completed': datetime.now().isoformat(),
+                        'scraping_completed': int(datetime.now().timestamp()),
                         'results': results
                     }
                     
@@ -120,7 +130,6 @@ class Scraper:
         except Exception as e:
             logger.error(f"Scraping failed: {str(e)}")
             return None
-
     def _generate_output_path(self, prefix: str = "scraped_data") -> Path:
         """
         Generate timestamped output file path.

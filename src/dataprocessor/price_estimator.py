@@ -1,52 +1,72 @@
-import pandas as pd
-import numpy as np
-from datetime import datetime
-from typing import Dict, Optional, Tuple
-import logging
+# src/dataprocessor/price_estimator.py
 
-class GrowthPriceEstimator:
+"""
+Price estimation module for calculating current market values based on historical data.
+"""
+import logging
+import json
+from datetime import datetime
+from typing import Dict, Optional
+import pandas as pd
+from .processor_base import ProcessorBase
+
+logger = logging.getLogger(__name__)
+
+class PriceEstimator(ProcessorBase):
+    """Estimates current market values using historical growth rates."""
+
     def __init__(self, reference_prices_path: str):
         """
-        Initialize with current market reference prices (2024 prices).
+        Initialize with reference prices data.
         
         Args:
             reference_prices_path: Path to CSV with current market prices per city
         """
-        self.current_prices = self._load_reference_prices(reference_prices_path)
+        self.reference_prices_path = reference_prices_path
         self.growth_rates = {}
+        self.current_prices = None
 
-    def _load_reference_prices(self, path: str) -> Dict:
+    def _load_reference_prices(self) -> bool:
         """Load current market reference prices per city and property type."""
-        df = pd.read_csv(path)
-        return {(row['city_name'], row['property_type']): row['price_per_m2'] 
-                for _, row in df.iterrows()}
-
-    def calculate_growth_rates(self, historical_data: pd.DataFrame) -> None:
-        """
-        Calculate yearly means and growth rates between consecutive years.
-        """
-        # Convert dates to years and calculate price per m²
-        historical_data['year'] = pd.to_datetime(
-            historical_data['mutation_date'], 
-            format='%d/%m/%Y'
-        ).dt.year
-        historical_data['price_per_m2'] = historical_data['price'] / historical_data['surface_area']
-        
-        growth_rates = {}
-        
-        # Calculate for each city and property type
-        for city in historical_data['city_name'].unique():
-            for prop_type in ['Appartement', 'Maison']:
-                # Filter data
-                mask = (historical_data['city_name'] == city) & \
-                       (historical_data['property_type'] == prop_type)
-                city_data = historical_data[mask]
+        try:
+            logger.info("Loading reference prices...")
+            df = self.load_csv(self.reference_prices_path)
+            if df is None:
+                logger.error("Failed to load reference prices. File is empty or invalid.")
+                return False
                 
-                if len(city_data) > 0:
-                    # Calculate mean price per m² for each year
+            self.current_prices = {
+                (row['city_name'], row['property_type']): row['price_per_m2'] 
+                for _, row in df.iterrows()
+            }
+            logger.info(f"Loaded reference prices for {len(self.current_prices)} city-property combinations.")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load reference prices: {e}")
+            return False
+
+    def _calculate_growth_rates(self, df: pd.DataFrame) -> bool:
+        """Calculate growth rates from historical data."""
+        try:
+            logger.info("Calculating growth rates from historical data...")
+            
+            # Add year and price per m²
+            df['year'] = pd.to_datetime(df['mutation_date'], format='%d/%m/%Y').dt.year
+            df['price_per_m2'] = df['price'] / df['surface_area']
+            
+            for city in df['city_name'].unique():
+                for prop_type in ['Appartement', 'Maison']:
+                    mask = (df['city_name'] == city) & (df['property_type'] == prop_type)
+                    city_data = df[mask]
+                    
+                    if city_data.empty:
+                        logger.info(f"No data for {city} - {prop_type}, skipping...")
+                        continue
+                    
                     yearly_means = city_data.groupby('year')['price_per_m2'].mean().to_dict()
                     
-                    # Get current reference price (2024)
+                    # Add current reference price if available
                     current_price = self.current_prices.get((city, prop_type))
                     if current_price:
                         yearly_means[2024] = current_price
@@ -58,7 +78,6 @@ class GrowthPriceEstimator:
                     for i in range(len(years)-1):
                         year = years[i]
                         next_year = years[i+1]
-                        
                         growth_rate = (yearly_means[next_year] / yearly_means[year]) - 1
                         yearly_growth[year] = {
                             'growth_rate': growth_rate,
@@ -66,51 +85,112 @@ class GrowthPriceEstimator:
                             'to_price': yearly_means[next_year]
                         }
                     
-                    growth_rates[(city, prop_type)] = {
+                    self.growth_rates[(city, prop_type)] = {
                         'yearly_means': yearly_means,
                         'yearly_growth': yearly_growth
                     }
-        
-        self.growth_rates = growth_rates
+                    
+            logger.info(f"Calculated growth rates for {len(self.growth_rates)} city-property combinations.")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate growth rates: {e}")
+            return False
 
-    def estimate_price(self, property_data: Dict) -> Tuple[Optional[float], Dict]:
+    def _estimate_property_price(self, row: pd.Series) -> pd.Series:
         """
-        Estimate current (2024) market value for a property using yearly growth rates.
+        Estimate current market value for a single property.
         """
-        city = property_data['city_name']
-        prop_type = property_data['property_type']
-        key = (city, prop_type)
-        
-        if key not in self.growth_rates:
-            return None, {"error": f"No growth data for {city} - {prop_type}"}
-        
-        sale_date = datetime.strptime(property_data['mutation_date'], '%d/%m/%Y')
-        sale_year = sale_date.year
-        initial_price_m2 = property_data['price'] / property_data['surface_area']
-        
-        growth_data = self.growth_rates[key]
-        yearly_means = growth_data['yearly_means']
-        yearly_growth = growth_data['yearly_growth']
-        
-        # Project price using successive yearly growth rates
-        current_price = initial_price_m2
-        applied_rates = []
-        
-        for year in range(sale_year, 2024):
-            if year in yearly_growth:
-                growth_info = yearly_growth[year]
-                current_price *= (1 + growth_info['growth_rate'])
-                applied_rates.append({
-                    'year': year,
-                    'rate': growth_info['growth_rate'],
-                    'price': current_price
-                })
-        
-        return current_price * property_data['surface_area'], {
-            "method": "yearly_growth",
-            "initial_price_m2": initial_price_m2,
-            "projected_price_m2": current_price,
-            "yearly_means": yearly_means,
-            "applied_rates": applied_rates,
-            "current_reference_price": yearly_means[2024]
-        }
+        try:
+            city = row['city_name']
+            prop_type = row['property_type']
+            key = (city, prop_type)
+            
+            # Initialize estimation columns
+            row['estimated_price'] = None
+            row['initial_price_m2'] = row['price'] / row['surface_area']
+            row['final_price_m2'] = None
+            row['total_growth_rate'] = None
+            
+            if key not in self.growth_rates:
+                return row
+            
+            sale_date = datetime.strptime(row['mutation_date'], '%d/%m/%Y')
+            sale_year = sale_date.year
+            
+            if sale_year >= 2024:
+                row['estimated_price'] = row['price']
+                row['final_price_m2'] = row['initial_price_m2']
+                row['total_growth_rate'] = 0
+                return row
+
+            growth_data = self.growth_rates[key]
+            yearly_growth = growth_data['yearly_growth']
+            
+            # Calculate price evolution
+            current_price = row['initial_price_m2']
+            
+            for year in range(sale_year, 2024):
+                if year in yearly_growth:
+                    growth_info = yearly_growth[year]
+                    current_price *= (1 + growth_info['growth_rate'])
+            
+            # Store results in columns
+            row['final_price_m2'] = round(current_price)
+            row['estimated_price'] = round(current_price * row['surface_area'])
+            row['total_growth_rate'] = round(((current_price / row['initial_price_m2']) - 1) * 100)
+            row['initial_price_m2'] = round(row['initial_price_m2'])
+            
+            return row
+            
+        except Exception as e:
+            logger.error(f"Failed to estimate price for property: {e}")
+            return row
+
+    def process(self, input_path: str, output_path: str) -> bool:
+        """
+        Process property data file and add price estimates.
+        """
+        try:
+            logger.info(f"Starting price estimation for file: {input_path}")
+            
+            if not self._load_reference_prices():
+                logger.error("Failed to load reference prices.")
+                return False
+
+            df = self.load_csv(input_path)
+            if df is None:
+                logger.error("Input file is empty or invalid.")
+                return False
+
+            required_columns = ['city_name', 'property_type', 'price', 'surface_area', 'mutation_date']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                logger.error(f"Missing required columns in input data: {missing_columns}")
+                return False
+
+            if not self._calculate_growth_rates(df):
+                logger.error("Failed to calculate growth rates.")
+                return False
+
+            df = df.apply(self._estimate_property_price, axis=1)
+            total_properties = len(df)
+
+            # Drop unwanted columns before saving
+            columns_to_exclude = ['estimation_status', 'applied_rates_json']
+            df = df.drop(columns=[col for col in columns_to_exclude if col in df.columns])
+
+            # Round numeric columns to integers
+            numeric_columns = ['price_per_m2', 'estimated_price', 'initial_price_m2', 'final_price_m2', 'total_growth_rate']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = df[col].apply(lambda x: int(round(x)) if pd.notnull(x) else '')
+
+            successful_estimates = df[df['estimated_price'].notnull()].shape[0]
+            logger.info(f"Estimated prices for {successful_estimates}/{total_properties} properties.")
+
+            return self.save_csv(df, output_path, index=False)
+            
+        except Exception as e:
+            logger.error(f"Price estimation failed: {e}")
+            return False

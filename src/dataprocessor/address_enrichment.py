@@ -1,285 +1,304 @@
-import requests
+"""
+Address enrichment module for adding geocoding and DPE data to properties.
+"""
+import re 
 import time
 import logging
-from abc import ABC, abstractmethod
+import requests
+import difflib
+from geopy.distance import geodesic
 from typing import Dict, Tuple, Optional, List
 import pandas as pd
-from datetime import datetime
+from .processor_base import ProcessorBase
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logger = logging.getLogger(__name__)
 
-class BaseAddressClient(ABC):
-    """Base class for address-based API clients with rate limiting and retry logic."""
-    
-    def __init__(self, min_delay: float = 0.02, max_retries: int = 1, retry_delay: float = 1.0):
-        """
-        Initialize the base client.
+class AddressEnrichment(ProcessorBase):
+    """Enriches property data with geocoding and DPE information."""
 
-        Args:
-            min_delay: Minimum delay between requests in seconds
-            max_retries: Maximum number of retry attempts for failed requests
-            retry_delay: Delay between retry attempts in seconds
-        """
+    def __init__(self):
+        """Initialize address enrichment with API endpoints and rate limiting."""
+        self.geocoding_url = "https://api-adresse.data.gouv.fr/search/"
+        self.dpe_url = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-france/lines"
+        
+        # Rate limiting settings
         self.last_request_time = 0
-        self.min_delay = min_delay
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
+        self.min_delay = 0.1  # 100ms between requests
+        self.max_retries = 5
+        self.retry_delay = 1.0
+        self.max_delay = 32.0  # Maximum backoff delay
+
+    def _calculate_distance(self, coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+        """
+        Calculate the geodesic distance between two coordinate pairs.
+        
+        Args:
+            coord1: Tuple of (latitude, longitude) for the first location.
+            coord2: Tuple of (latitude, longitude) for the second location.
+
+        Returns:
+            Distance in meters.
+        """
+        return geodesic(coord1, coord2).meters
 
     def _wait_if_needed(self) -> None:
         """Ensure minimum delay between API requests."""
         current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.min_delay:
-            time.sleep(self.min_delay - time_since_last)
+        elapsed = current_time - self.last_request_time
+        if elapsed < self.min_delay:
+            time.sleep(self.min_delay - elapsed)
         self.last_request_time = time.time()
 
-    def _make_request(self, url: str, params: Optional[Dict] = None) -> Optional[Dict]:
+    def _make_request(self, url: str, params: Dict) -> Optional[Dict]:
         """
-        Make an API request with retry logic.
-
+        Make API request with retry logic and rate limiting.
+        
         Args:
             url: API endpoint URL
             params: Query parameters
-
+            
         Returns:
             Optional[Dict]: API response data if successful, None otherwise
         """
         attempts = 0
-        while attempts <= self.max_retries:
+        while attempts < self.max_retries:
             try:
                 self._wait_if_needed()
-                response = requests.get(url, params=params)
-                response.raise_for_status()
-                return response.json()
-            except requests.RequestException as e:
-                attempts += 1
-                if attempts <= self.max_retries:
-                    logging.warning(f"Request failed, attempt {attempts}/{self.max_retries}: {str(e)}")
-                    time.sleep(self.retry_delay)
+                
+                headers = {
+                    'Accept': 'application/json',
+                    'User-Agent': 'PropertyDataProcessor/1.0'
+                }
+
+                response = requests.get(
+                    url, 
+                    params=params,
+                    headers=headers,
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    return response.json()
+                    
+                elif response.status_code == 429:  # Too Many Requests
+                    retry_after = int(response.headers.get('Retry-After', self.retry_delay))
+                    logger.warning(f"Rate limit exceeded. Waiting {retry_after}s...")
+                    time.sleep(retry_after)
+                    
+                elif response.status_code >= 500:  # Server errors
+                    delay = min(self.retry_delay * (2 ** attempts), self.max_delay)
+                    logger.warning(f"Server error {response.status_code}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    
                 else:
-                    logging.error(f"All retry attempts failed for URL {url}: {str(e)}")
+                    logger.error(f"Request failed with status {response.status_code}: {response.text}")
                     return None
-            except Exception as e:
-                logging.error(f"Unexpected error for URL {url}: {str(e)}")
-                return None
 
-    @abstractmethod
-    def enrich_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+            except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+                delay = min(self.retry_delay * (2 ** attempts), self.max_delay)
+                logger.warning(f"Request error: {str(e)}. Retrying in {delay}s... ({attempts + 1}/{self.max_retries})")
+                time.sleep(delay)
+                
+            attempts += 1
+
+        logger.error(f"Failed to get response from {url} after {self.max_retries} attempts")
+        return None
+
+    def _get_coordinates(self, address: str, city: str) -> Optional[Tuple[float, float]]:
         """
-        Abstract method to enrich a DataFrame with additional data.
-
-        Args:
-            df: Input DataFrame
-
-        Returns:
-            DataFrame with enriched data
-        """
-        pass
-
-class GeocodingClient(BaseAddressClient):
-    """Client for the French government's geocoding API."""
-    
-    def __init__(self, min_delay: float = 0.02):
-        """Initialize the geocoding client."""
-        super().__init__(min_delay=min_delay)
-        self.base_url = "https://api-adresse.data.gouv.fr/search/"
-
-    def get_coordinates(self, address: str, city: str = "PARIS") -> Optional[Tuple[float, float]]:
-        """
-        Retrieve geographic coordinates for a given address.
-
+        Get geographic coordinates for an address.
+        
         Args:
             address: Street address
             city: City name
-
+            
         Returns:
             Optional tuple of (longitude, latitude)
         """
-        query = f"{address} {city}"
         params = {
-            "q": query,
+            "q": f"{address} {city}",
             "limit": 1,
-            "autocomplete": 0
+            "type": "housenumber"
         }
 
-        response_data = self._make_request(self.base_url, params)
-        
-        if response_data and response_data.get("features"):
-            coordinates = response_data["features"][0]["geometry"]["coordinates"]
-            return coordinates[0], coordinates[1]  # longitude, latitude
+        data = self._make_request(self.geocoding_url, params)
+        if data and data.get("features"):
+            coords = data["features"][0]["geometry"]["coordinates"]
+            return coords[0], coords[1]  # longitude, latitude
         return None
 
-    def enrich_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _get_dpe_data(self, address: str, city: str, coordinates: Optional[Tuple[float, float]]) -> Optional[Dict]:
         """
-        Add geographic coordinates to a DataFrame.
-
-        Args:
-            df: DataFrame with 'complete_address' and 'city_name' columns
-
-        Returns:
-            DataFrame with added 'longitude' and 'latitude' columns
+        Fetch DPE data for a given address using ADEME API.
         """
-        required_columns = ['complete_address', 'city_name']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
+        try:
+            logger.debug(f"Searching DPE for: Address='{address}', City='{city}'")
 
-        df['longitude'] = None
-        df['latitude'] = None
+            # Build simple query parameters like our successful curl test
+            params = {
+                "select": "geo_adresse,geo_score,date_etablissement_dpe,classe_consommation_energie,classe_estimation_ges,consommation_energie,estimation_ges,tr002_type_batiment_description,latitude,longitude",
+                "q": f"{address} {city}",  # Search full address including city
+                "sort": "-geo_score,-date_etablissement_dpe",
+                "size": 10
+            }
 
-        total_addresses = len(df)
-        success_count = 0
+            # Add geo distance filter if coordinates available
+            if coordinates:
+                params["geo_distance"] = f"{coordinates[0]}:{coordinates[1]}:100"
 
-        for idx, row in df.iterrows():
-            if idx % 10 == 0:
-                logging.info(f"Geocoding progress: {idx}/{total_addresses}")
+            logger.debug(f"DPE API query parameters: {params}")
+            
+            data = self._make_request(self.dpe_url, params)
+            
+            if not data or not data.get("results"):
+                logger.debug("No results in API response")
+                return None
 
-            try:
-                coordinates = self.get_coordinates(
-                    address=row['complete_address'],
-                    city=row['city_name']
+            # Log each potential match
+            for result in data["results"]:
+                logger.debug(
+                    f"Found match: "
+                    f"address='{result.get('geo_adresse')}', "
+                    f"score={result.get('geo_score')}, "
+                    f"type={result.get('tr002_type_batiment_description')}"
                 )
+                
+                # Check geo_score quality
+                if result.get("geo_score", 0) < 0.8:
+                    continue
+                    
+                # Verify building type
+                building_type = result.get("tr002_type_batiment_description")
+                if not building_type or building_type not in [
+                    "Maison Individuelle",
+                    "Logement",
+                    "Bâtiment collectif à usage principal d'habitation"
+                ]:
+                    continue
 
-                if coordinates:
-                    df.at[idx, 'longitude'] = coordinates[0]
-                    df.at[idx, 'latitude'] = coordinates[1]
-                    success_count += 1
+                return result
 
-            except Exception as e:
-                logging.error(f"Error geocoding row {idx}: {str(e)}")
-                continue
-
-        logging.info(f"Geocoding completed. {success_count}/{total_addresses} addresses successfully geocoded.")
-        return df
-
-class DPEClient(BaseAddressClient):
-    """Client for the ADEME DPE API."""
-    
-    def __init__(self, min_delay: float = 0.05):  # 50ms for rate limit of 100/5s
-        """Initialize the DPE client."""
-        super().__init__(min_delay=min_delay)
-        self.base_url = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-france/lines"
-
-    def get_dpe_data(self, address: str, city: str = "PARIS") -> Optional[Dict]:
-        """
-        Retrieve DPE data for a given address.
-
-        Args:
-            address: Street address
-            city: City name
-
-        Returns:
-            Optional[Dict]: Most recent DPE data if found and valid
-        """
-        query = f"{address} {city}"
-        params = {
-            "q": query,
-            "size": 10  # Get multiple results to find best match
-        }
-
-        response_data = self._make_request(self.base_url, params)
-        
-        if not response_data or not response_data.get("results"):
             return None
 
-        # Filter for high confidence matches and sort by date
-        valid_matches = [
-            result for result in response_data["results"]
-            if result.get("geo_score", 0) > 0.8
-        ]
-
-        if not valid_matches:
+        except Exception as e:
+            logger.error(f"Error fetching DPE data for {address}: {str(e)}")
+            logger.debug("Error details:", exc_info=True)
             return None
-
-        # Return most recent DPE
-        return max(
-            valid_matches,
-            key=lambda x: x.get("date_etablissement_dpe", "1900-01-01")
-        )
-
-    def enrich_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+      
+    def process(self, input_path: str, output_path: str) -> bool:
         """
-        Add DPE data to a DataFrame.
-
-        Args:
-            df: DataFrame with 'complete_address' and 'city_name' columns
-
-        Returns:
-            DataFrame with added DPE columns
-        """
-        required_columns = ['complete_address', 'city_name']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
-
-        # Initialize DPE columns
-        dpe_columns = [
-            'dpe_energy_class', 'dpe_ges_class', 'dpe_energy_value',
-            'dpe_ges_value', 'dpe_surface', 'dpe_date', 'dpe_construction_year',
-            'dpe_type', 'building_type'
-        ]
+        Process property data file with address enrichment.
         
-        for col in dpe_columns:
-            df[col] = None
+        Args:
+            input_path: Path to input CSV file
+            output_path: Path to save enriched CSV file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            logger.info(f"Starting address enrichment process...")
+            logger.info(f"Loading data from {input_path}")
+            
+            # Load input data
+            df = self.load_csv(input_path)
+            if df is None:
+                return False
 
-        total_properties = len(df)
-        success_count = 0
+            # Validate required columns
+            required = ['complete_address', 'city_name']
+            if any(col not in df.columns for col in required):
+                logger.error(f"Missing required columns: {required}")
+                return False
 
-        for idx, row in df.iterrows():
-            if idx % 10 == 0:
-                logging.info(f"DPE lookup progress: {idx}/{total_properties}")
+            # Initialize new columns
+            new_columns = {
+                # Geocoding columns
+                'longitude': None, 
+                'latitude': None,
+                # DPE columns
+                'dpe_energy_class': None,
+                'dpe_energy_value': None,
+                'dpe_ges_class': None, 
+                'dpe_ges_value': None,
+                'building_type': None,
+                'dpe_date': None
+            }
+            
+            for col, default in new_columns.items():
+                if col not in df.columns:
+                    df[col] = default
 
-            try:
-                dpe_data = self.get_dpe_data(
-                    address=row['complete_address'],
-                    city=row['city_name']
-                )
+            total_properties = len(df)
+            logger.info(f"Starting enrichment for {total_properties} properties...")
+            
+            # Process each property
+            geocoding_success = 0
+            dpe_success = 0
 
-                if dpe_data:
-                    df.at[idx, 'dpe_energy_class'] = dpe_data.get('classe_consommation_energie')
-                    df.at[idx, 'dpe_ges_class'] = dpe_data.get('classe_estimation_ges')
-                    df.at[idx, 'dpe_energy_value'] = dpe_data.get('consommation_energie')
-                    df.at[idx, 'dpe_ges_value'] = dpe_data.get('estimation_ges')
-                    df.at[idx, 'dpe_surface'] = dpe_data.get('surface_thermique_lot')
-                    df.at[idx, 'dpe_date'] = dpe_data.get('date_etablissement_dpe')
-                    df.at[idx, 'dpe_construction_year'] = dpe_data.get('annee_construction')
-                    df.at[idx, 'dpe_type'] = dpe_data.get('tr001_modele_dpe_type_libelle')
-                    df.at[idx, 'building_type'] = dpe_data.get('tr002_type_batiment_description')
-                    success_count += 1
+            for idx, row in df.iterrows():
+                if idx % 5 == 0:
+                    logger.info(f"Processing property {idx+1}/{total_properties}")
 
-            except Exception as e:
-                logging.error(f"Error fetching DPE data for row {idx}: {str(e)}")
-                continue
+                try:
+                    # Step 1: Geocoding
+                    coords = self._get_coordinates(row['complete_address'], row['city_name'])
+                    if coords:
+                        df.at[idx, 'longitude'], df.at[idx, 'latitude'] = coords
+                        geocoding_success += 1
+                        logger.debug(f"Geocoding successful for {row['complete_address']}")
+                    
+                    # Step 2: DPE Data
+                    dpe_data = self._get_dpe_data(
+                        address=row['complete_address'],
+                        city=row['city_name'],
+                        coordinates=coords
+                    )
 
-        logging.info(f"DPE lookup completed. {success_count}/{total_properties} properties enriched with DPE data.")
-        return df
+                    if dpe_data:
+                        # Map DPE fields to DataFrame columns
+                        field_mapping = {
+                            'classe_consommation_energie': 'dpe_energy_class',
+                            'consommation_energie': 'dpe_energy_value',
+                            'classe_estimation_ges': 'dpe_ges_class',
+                            'estimation_ges': 'dpe_ges_value',
+                            'tr002_type_batiment_description': 'building_type',
+                            'date_etablissement_dpe': 'dpe_date'
+                        }
 
-def enrich_address_data(df: pd.DataFrame, 
-                       include_geocoding: bool = True, 
-                       include_dpe: bool = True) -> pd.DataFrame:
-    """
-    Enrich address data with geocoding and DPE information.
+                        for api_field, df_column in field_mapping.items():
+                            df.at[idx, df_column] = dpe_data.get(api_field)
+                        
+                        dpe_success += 1
+                        logger.debug(
+                            f"DPE data found for {row['complete_address']}: "
+                            f"Energy={dpe_data.get('classe_consommation_energie')}, "
+                            f"GES={dpe_data.get('classe_estimation_ges')}"
+                        )
 
-    Args:
-        df: Input DataFrame with address information
-        include_geocoding: Whether to include geocoding enrichment
-        include_dpe: Whether to include DPE data enrichment
+                    # Add delay between properties
+                    time.sleep(0.5)  # 500ms delay
 
-    Returns:
-        Enriched DataFrame
-    """
-    enriched_df = df.copy()
+                except Exception as e:
+                    logger.error(f"Error processing property {idx}: {str(e)}")
+                    continue
 
-    if include_geocoding:
-        geocoder = GeocodingClient()
-        enriched_df = geocoder.enrich_dataframe(enriched_df)
+            # Calculate and log success rates
+            geocoding_rate = (geocoding_success / total_properties) * 100
+            dpe_rate = (dpe_success / total_properties) * 100
+            
+            logger.info("Enrichment completed:")
+            logger.info(f"- Geocoding success: {geocoding_success}/{total_properties} ({geocoding_rate:.1f}%)")
+            logger.info(f"- DPE data success: {dpe_success}/{total_properties} ({dpe_rate:.1f}%)")
 
-    if include_dpe:
-        dpe_client = DPEClient()
-        enriched_df = dpe_client.enrich_dataframe(enriched_df)
+            # Save enriched data
+            success = self.save_csv(df, output_path)
+            if success:
+                logger.info(f"Successfully saved enriched data to {output_path}")
+            
+            return success
 
-    return enriched_df
+        except Exception as e:
+            logger.error(f"Enrichment failed: {str(e)}")
+            logger.debug("Error details:", exc_info=True)
+            return False

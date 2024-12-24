@@ -1,28 +1,55 @@
-# test.py
+"""
+Test script for DataProcessor execution.
+"""
 
-import asyncio
 import logging
-from src.scraper.base_scraper import Scraper
+from pathlib import Path
+from src.dataprocessor.processor_base import DataProcessor
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.immo-data.fr/explorateur/transaction/recherche?minprice=0&maxprice=25000000&minpricesquaremeter=0&maxpricesquaremeter=40000&propertytypes=0%2C1%2C2%2C4%2C5&minmonthyear=Janvier%202014&maxmonthyear=Juin%202024&nbrooms=1%2C2%2C3%2C4%2C5&minsurface=0&maxsurface=400&minsurfaceland=0&maxsurfaceland=50000&center=2.3431957478042023%3B48.85910487750468&zoom=13.042327120629595"
-
-async def test_manual_scraping():
-    """Test manual scraping for January 2014."""
+def test_data_processor():
+    """Test the complete DataProcessor pipeline."""
     try:
-        scraper = Scraper(
-            base_url=BASE_URL,
-            start_date="01/2014",
-            end_date="01/2014"
-        )
-        logger.info("Starting scraping for January 2014...")
-        return await scraper.run()
-        
+        # Configuration for the processor
+        config = {
+            "reference_prices_path": "data/reference_prices.csv",
+            "output_dir": "data/test_output",
+            "keep_intermediate": True
+        }
+
+        # Input file
+        input_json = "data/raw/scraping_20241224_105611.json"
+
+        # Check if the input file exists
+        if not Path(input_json).exists():
+            logger.error(f"Input file not found: {input_json}")
+            return False
+
+        # Initialize the processor
+        processor = DataProcessor(config)
+
+        # Execute the processing pipeline
+        if processor.process(input_json):
+            logger.info("DataProcessor pipeline executed successfully.")
+            return True
+        else:
+            logger.error("DataProcessor pipeline failed.")
+            return False
+
     except Exception as e:
-        logger.error(f"Test failed: {str(e)}")
-        return None
+        logger.error(f"Error during DataProcessor test: {str(e)}")
+        logger.debug("Error details:", exc_info=True)
+        return False
 
 if __name__ == "__main__":
-    asyncio.run(test_manual_scraping())
+    test_data_processor()
