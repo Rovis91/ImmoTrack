@@ -60,17 +60,15 @@ def start_parser(config: Dict) -> bool:
         # Map dataprocessor_output_dir to output_dir for DataProcessor compatibility
         config["output_dir"] = config["dataprocessor_output_dir"]
 
-        # Resolve input file and reference price paths
+        # Resolve paths only if necessary
         config["parser_input"] = resolve_path("data/raw", config["parser_input"])
-        config["reference_prices_path"] = resolve_path("data/raw", config["reference_prices_path"])
-
         processor = DataProcessor(config)
         return processor.process(config["parser_input"])
     except Exception as e:
         raise Exception(f"Parsing failed: {str(e)}")
 
 
-def start_full_process(config: Dict) -> bool:
+async def start_full_process(config: Dict) -> bool:
     """
     Run the full process: scrape and parse.
     """
@@ -78,12 +76,11 @@ def start_full_process(config: Dict) -> bool:
         # Map dataprocessor_output_dir to output_dir for DataProcessor compatibility
         config["output_dir"] = config["dataprocessor_output_dir"]
 
-        # Resolve paths
+        # Resolve paths for scraping output
         config["output_scraper"] = resolve_path("data/raw", config["output_scraper"])
-        config["reference_prices_path"] = resolve_path("data/raw", config["reference_prices_path"])
 
         # Step 1: Scraping
-        scraper_output = asyncio.run(start_scraping(config))
+        scraper_output = await start_scraping(config)  # Use await instead of asyncio.run()
         if not scraper_output:
             raise Exception("Scraping step failed.")
         

@@ -13,8 +13,18 @@ console = Console()
 def resolve_path(base_dir: str, file_path: str) -> str:
     """
     Resolve a file path relative to a base directory.
+    If the file_path is already absolute or starts with the base_dir, it is returned as-is.
     """
-    return str(Path(base_dir).joinpath(file_path).resolve())
+    base_path = Path(base_dir).resolve()
+    full_path = Path(file_path).resolve()
+
+    # If the file_path is already within the base_dir, return it as-is
+    if str(full_path).startswith(str(base_path)):
+        return str(full_path)
+
+    # Otherwise, join base_dir and file_path
+    return str(base_path.joinpath(file_path).resolve())
+
 
 class Menu:
     def __init__(self):
@@ -86,8 +96,8 @@ class Menu:
                 config["parser_input"] = resolve_path("data/raw", input_file)
                 config["output_dir"] = config["dataprocessor_output_dir"]
 
-                # Ensure reference_prices_path exists in the config
-                config["reference_prices_path"] = resolve_path("data/raw", config["reference_prices_path"])
+                # Use reference_prices_path as-is
+                config["reference_prices_path"] = config["reference_prices_path"]
 
                 confirm = Confirm.ask("Start parsing with loaded config?")
                 if confirm:
@@ -103,12 +113,14 @@ class Menu:
                 confirm = Confirm.ask("Start full process (scrape + parse) with loaded config?")
                 if confirm:
                     try:
-                        if start_full_process(config):
-                            self.console.print(f"[green]Full process completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
+                        # Use await since start_full_process is now asynchronous
+                        if await start_full_process(config):
+                            console.print(f"[green]Full process completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
                         else:
-                            self.console.print("[red]Full process failed[/red]")
+                            console.print("[red]Full process failed[/red]")
                     except Exception as e:
-                        self.console.print(f"[red]Error during full process: {str(e)}[/red]")
+                        console.print(f"[red]Error during full process: {str(e)}[/red]")
+
                 
             self.console.print("\nPress Enter to continue...")
             input()
