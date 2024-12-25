@@ -39,6 +39,13 @@ class WebsiteSelectors:
     price: str = 'p.text-primary-500.font-bold.whitespace-nowrap'
     details: str = 'div.flex.gap-4.text-gray-600'
 
+@dataclass
+class MeilleursAgentsSelectors:
+    """CSS selectors for MeilleursAgents price elements."""
+    container: str = 'div.prices-summary__prices--container'
+    apartment_price: str = 'div.prices-summary__apartment-prices .prices-summary__price-range .big-number'
+    house_price: str = 'div.prices-summary__house-prices .prices-summary__price-range .big-number'
+
 class Config:
     """
     Main configuration class that loads and manages all scraper settings.

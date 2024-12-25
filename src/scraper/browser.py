@@ -136,7 +136,43 @@ class BrowserManager:
                 return await self.get_properties(url, retry_count + 1)
             
             raise
+
+    async def get_page_content(self, url: str) -> Optional[str]:
+        """
+        Get full page HTML content with smart waiting strategy.
+        
+        Args:
+            url: Target URL to fetch content from
             
+        Returns:
+            Optional[str]: HTML content if successful, None otherwise
+        """
+        try:
+            await self._page.goto(
+                url, 
+                wait_until='networkidle',
+                timeout=self.config.browser.navigation_timeout
+            )
+            
+            # Base wait for dynamic content
+            await asyncio.sleep(5)
+
+            # Get content
+            content = await self._page.content()
+            logger.debug(f"Fetched content length: {len(content)}")
+            
+            # Basic content validation
+            if len(content) < 1000:
+                logger.warning("Content seems too short, might be incomplete")
+            elif "prices-summary" not in content:
+                logger.warning("Expected content markers not found in page")
+                
+            return content
+
+        except Exception as e:
+            logger.error(f"Failed to get page content: {str(e)}")
+            return None
+        
     async def __aenter__(self):
         """Async context manager entry."""
         await self.connect()

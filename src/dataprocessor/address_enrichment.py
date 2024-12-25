@@ -104,16 +104,16 @@ class AddressEnrichment(ProcessorBase):
         logger.error(f"Failed to get response from {url} after {self.max_retries} attempts")
         return None
 
-    def _get_coordinates(self, address: str, city: str) -> Optional[Tuple[float, float]]:
+    def _get_adress_data(self, address: str, city: str) -> Optional[Tuple[float, float]]:
         """
-        Get geographic coordinates for an address.
+        Get geographic coordinates and zip code for an address.
         
         Args:
             address: Street address
             city: City name
             
         Returns:
-            Optional tuple of (longitude, latitude)
+            Optional tuple of (longitude, latitude, zipcode)
         """
         params = {
             "q": f"{address} {city}",
@@ -124,7 +124,10 @@ class AddressEnrichment(ProcessorBase):
         data = self._make_request(self.geocoding_url, params)
         if data and data.get("features"):
             coords = data["features"][0]["geometry"]["coordinates"]
-            return coords[0], coords[1]  # longitude, latitude
+            zipcode = data["features"][0]["properties"].get("postcode")
+            insee_code = data["features"][0]["properties"].get("citycode")
+            region = data["features"][0]["properties"].get("context")
+            return coords[0], coords[1], zipcode, insee_code, region
         return None
 
     def _get_dpe_data(self, address: str, city: str, coordinates: Optional[Tuple[float, float]]) -> Optional[Dict]:
@@ -216,6 +219,9 @@ class AddressEnrichment(ProcessorBase):
                 # Geocoding columns
                 'longitude': None, 
                 'latitude': None,
+                'zipcode': None,
+                'insee_code': None,
+                'region': None,
                 # DPE columns
                 'dpe_energy_class': None,
                 'dpe_energy_value': None,
@@ -242,39 +248,50 @@ class AddressEnrichment(ProcessorBase):
 
                 try:
                     # Step 1: Geocoding
-                    coords = self._get_coordinates(row['complete_address'], row['city_name'])
-                    if coords:
-                        df.at[idx, 'longitude'], df.at[idx, 'latitude'] = coords
+                    address_data = self._get_adress_data(row['complete_address'], row['city_name'])
+                    coords = None
+                    
+                    if address_data:
+                        longitude, latitude, zipcode, insee_code, region = address_data
+                        coords = (longitude, latitude)  # Store coordinates for DPE lookup
+                        
+                        # Update geocoding columns
+                        df.at[idx, 'longitude'] = longitude
+                        df.at[idx, 'latitude'] = latitude
+                        df.at[idx, 'zipcode'] = zipcode
+                        df.at[idx, 'insee_code'] = insee_code
+                        df.at[idx, 'region'] = region
                         geocoding_success += 1
                         logger.debug(f"Geocoding successful for {row['complete_address']}")
                     
                     # Step 2: DPE Data
-                    dpe_data = self._get_dpe_data(
-                        address=row['complete_address'],
-                        city=row['city_name'],
-                        coordinates=coords
-                    )
-
-                    if dpe_data:
-                        # Map DPE fields to DataFrame columns
-                        field_mapping = {
-                            'classe_consommation_energie': 'dpe_energy_class',
-                            'consommation_energie': 'dpe_energy_value',
-                            'classe_estimation_ges': 'dpe_ges_class',
-                            'estimation_ges': 'dpe_ges_value',
-                            'tr002_type_batiment_description': 'building_type',
-                            'date_etablissement_dpe': 'dpe_date'
-                        }
-
-                        for api_field, df_column in field_mapping.items():
-                            df.at[idx, df_column] = dpe_data.get(api_field)
-                        
-                        dpe_success += 1
-                        logger.debug(
-                            f"DPE data found for {row['complete_address']}: "
-                            f"Energy={dpe_data.get('classe_consommation_energie')}, "
-                            f"GES={dpe_data.get('classe_estimation_ges')}"
+                    if coords:  # Only attempt DPE lookup if we have coordinates
+                        dpe_data = self._get_dpe_data(
+                            address=row['complete_address'],
+                            city=row['city_name'],
+                            coordinates=coords
                         )
+
+                        if dpe_data:
+                            # Map DPE fields to DataFrame columns
+                            field_mapping = {
+                                'classe_consommation_energie': 'dpe_energy_class',
+                                'consommation_energie': 'dpe_energy_value',
+                                'classe_estimation_ges': 'dpe_ges_class',
+                                'estimation_ges': 'dpe_ges_value',
+                                'tr002_type_batiment_description': 'building_type',
+                                'date_etablissement_dpe': 'dpe_date'
+                            }
+
+                            for api_field, df_column in field_mapping.items():
+                                df.at[idx, df_column] = dpe_data.get(api_field)
+                            
+                            dpe_success += 1
+                            logger.debug(
+                                f"DPE data found for {row['complete_address']}: "
+                                f"Energy={dpe_data.get('classe_consommation_energie')}, "
+                                f"GES={dpe_data.get('classe_estimation_ges')}"
+                            )
 
                     # Add delay between properties
                     time.sleep(0.5)  # 500ms delay

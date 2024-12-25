@@ -139,7 +139,7 @@ class DataProcessor:
         """Generate standardized file paths for each stage."""
         return self.output_dir / f"{stage}.{extension}"
 
-    def process(self, input_json: str) -> bool:
+    async def process(self, input_json: str) -> bool:
         """
         Run complete processing pipeline.
         
@@ -163,42 +163,19 @@ class DataProcessor:
                 logger.error("Parsing step failed")
                 return False
                 
-            # Verify parsed output exists
-            if not parsed_path.exists():
-                logger.error("Parsed output file not created")
-                return False
-            
             # Step 2: Enrich with address data
             logger.info("Starting enrichment step...")
             if not self.enricher.process(str(parsed_path), str(enriched_path)):
                 logger.error("Enrichment step failed")
                 return False
                 
-            # Verify enriched output exists
-            if not enriched_path.exists():
-                logger.error("Enriched output file not created")
-                return False
-                
             # Step 3: Add price estimates
             logger.info("Starting price estimation step...")
-            if not self.estimator.process(str(enriched_path), str(final_path)):
+            if not await self.estimator.process(str(enriched_path), str(final_path)):
                 logger.error("Price estimation step failed")
                 return False
-                
-            # Verify final output exists
-            if not final_path.exists():
-                logger.error("Final output file not created")
-                return False
             
-            # Cleanup intermediate files if requested
-            if not self.config.get('keep_intermediate', True):
-                parsed_path.unlink(missing_ok=True)
-                enriched_path.unlink(missing_ok=True)
-                logger.info("Cleaned up intermediate files")
-            
-            logger.info(f"Processing pipeline completed successfully")
-            logger.info(f"Final output saved to: {final_path}")
-            
+            logger.info("Processing pipeline completed successfully")
             return True
             
         except Exception as e:

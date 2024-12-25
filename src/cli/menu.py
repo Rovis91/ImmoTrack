@@ -1,3 +1,5 @@
+# menu.py
+
 import json
 from pathlib import Path
 from typing import Optional, Dict
@@ -9,26 +11,35 @@ from .command_handlers import start_scraping, start_parser, start_full_process
 
 console = Console()
 
-
-def resolve_path(base_dir: str, file_path: str) -> str:
+def resolve_path(file_path: str, base_dir: Optional[str] = None) -> Path:
     """
-    Resolve a file path relative to a base directory.
-    If the file_path is already absolute or starts with the base_dir, it is returned as-is.
+    Resolve a file path, making it absolute if it isn't already.
+    
+    Args:
+        file_path: Path to resolve
+        base_dir: Optional base directory to resolve relative paths against
+        
+    Returns:
+        Path: Resolved absolute path
     """
-    base_path = Path(base_dir).resolve()
-    full_path = Path(file_path).resolve()
-
-    # If the file_path is already within the base_dir, return it as-is
-    if str(full_path).startswith(str(base_path)):
-        return str(full_path)
-
-    # Otherwise, join base_dir and file_path
-    return str(base_path.joinpath(file_path).resolve())
-
+    path = Path(file_path)
+    
+    # If path is absolute, return it
+    if path.is_absolute():
+        return path
+        
+    # If base_dir provided, resolve against it
+    if base_dir:
+        return Path(base_dir).resolve() / path
+        
+    # Otherwise resolve against current working directory
+    return path.resolve()
 
 class Menu:
     def __init__(self):
         self.console = Console()
+        # Get the project root directory (parent of src)
+        self.project_root = Path(__file__).parent.parent.parent.resolve()
         
     def _display_header(self):
         self.console.print(Panel.fit(
@@ -38,14 +49,38 @@ class Menu:
         
     def _load_config(self, config_path: str) -> Optional[Dict]:
         try:
-            with open(config_path, 'r') as f:
+            # Resolve config path relative to project root if not absolute
+            config_file = resolve_path(config_path, self.project_root)
+            
+            if not config_file.exists():
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+                
+            with open(config_file, 'r') as f:
                 config = json.load(f)
-                # Validate required keys
-                required_keys = ["base_url", "start_date", "end_date", "search_type", "output_scraper", "dataprocessor_output_dir"]
-                for key in required_keys:
-                    if key not in config:
-                        raise ValueError(f"Missing required configuration key: {key}")
-                return config
+                
+            # Validate required keys
+            required_keys = [
+                "base_url",
+                "start_date",
+                "end_date",
+                "search_type",
+                "output_scraper",
+                "dataprocessor_output_dir",
+                "reference_prices_path"
+            ]
+            
+            missing_keys = [key for key in required_keys if key not in config]
+            if missing_keys:
+                raise ValueError(f"Missing required configuration keys: {', '.join(missing_keys)}")
+                
+            # Resolve paths in config relative to project root
+            path_keys = ['output_scraper', 'dataprocessor_output_dir', 'reference_prices_path']
+            for key in path_keys:
+                if key in config:
+                    config[key] = str(resolve_path(config[key], self.project_root))
+                    
+            return config
+            
         except Exception as e:
             self.console.print(f"[red]Error loading config: {str(e)}[/red]")
             return None
@@ -54,6 +89,7 @@ class Menu:
         while True:
             self._display_header()
             
+            # Display menu options
             self.console.print("\n[yellow]Available Actions:[/yellow]")
             table = Table(show_header=False, box=None)
             table.add_row("[1]", "Run scraper only")
@@ -66,61 +102,57 @@ class Menu:
             
             if choice == "q":
                 break
-            
+                
+            # Get config file path
+            default_config = "config/scraping_config.json"
             config_path = Prompt.ask(
                 "Enter config file path",
-                default="config/scraping_config.json"
+                default=default_config
             )
+            
+            # Load and validate config
             config = self._load_config(config_path)
             if not config:
                 continue
 
-            if choice == "1":
-                confirm = Confirm.ask("Start scraping with loaded config?")
-                if confirm:
-                    try:
+            try:
+                if choice == "1":
+                    if Confirm.ask("Start scraping with loaded config?"):
                         result = await start_scraping(config)
                         if result:
                             self.console.print(f"[green]Scraping completed. Results saved to: {result}[/green]")
                         else:
                             self.console.print("[red]Scraping failed[/red]")
-                    except Exception as e:
-                        self.console.print(f"[red]Error during scraping: {str(e)}[/red]")
 
-            elif choice == "2":
-                input_file = Prompt.ask(
-                    "Enter input file for parsing",
-                    default=config["output_scraper"]
-                )
-                # Resolve paths relative to the correct base directory
-                config["parser_input"] = resolve_path("data/raw", input_file)
-                config["output_dir"] = config["dataprocessor_output_dir"]
-
-                # Use reference_prices_path as-is
-                config["reference_prices_path"] = config["reference_prices_path"]
-
-                confirm = Confirm.ask("Start parsing with loaded config?")
-                if confirm:
-                    try:
-                        if start_parser(config):
-                            console.print(f"[green]Parsing completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
+                elif choice == "2":
+                    input_file = Prompt.ask(
+                        "Enter input file for parsing",
+                        default=config["output_scraper"]
+                    )
+                    
+                    input_path = resolve_path(input_file, self.project_root)
+                    
+                    if not input_path.exists():
+                        self.console.print(f"[red]Input file not found: {input_path}[/red]")
+                        continue
+                        
+                    config["parser_input"] = str(input_path)
+                    
+                    if Confirm.ask("Start parsing with loaded config?"):
+                        if await start_parser(config):  # Ajout du await ici
+                            self.console.print(f"[green]Parsing completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
                         else:
-                            console.print("[red]Parsing failed[/red]")
-                    except Exception as e:
-                        console.print(f"[red]Error during parsing: {str(e)}[/red]")
+                            self.console.print("[red]Parsing failed[/red]")
 
-            elif choice == "3":
-                confirm = Confirm.ask("Start full process (scrape + parse) with loaded config?")
-                if confirm:
-                    try:
-                        # Use await since start_full_process is now asynchronous
+                elif choice == "3":
+                    if Confirm.ask("Start full process with loaded config?"):
                         if await start_full_process(config):
-                            console.print(f"[green]Full process completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
+                            self.console.print(f"[green]Full process completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
                         else:
-                            console.print("[red]Full process failed[/red]")
-                    except Exception as e:
-                        console.print(f"[red]Error during full process: {str(e)}[/red]")
-
+                            self.console.print("[red]Full process failed[/red]")
+                            
+            except Exception as e:
+                self.console.print(f"[red]Error: {str(e)}[/red]")
                 
             self.console.print("\nPress Enter to continue...")
             input()
