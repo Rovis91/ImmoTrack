@@ -1,10 +1,11 @@
 from pathlib import Path
 from typing import Dict, Optional
-import asyncio
+import pandas as pd
 import logging
 from src.scraper.base_scraper import Scraper
 from src.scraper.url_generator import SearchType
 from src.dataprocessor.processor_base import DataProcessor
+from src.utils.storage_manager import PropertyDataManager, DataFormat
 
 logger = logging.getLogger(__name__)
 
@@ -124,4 +125,61 @@ async def start_full_process(config: Dict) -> bool:
         
     except Exception as e:
         logger.error(f"Full process failed: {str(e)}", exc_info=True)
+        raise
+
+def init_storage_manager(config: Dict) -> PropertyDataManager:
+    """Initialize and return storage manager instance."""
+    try:
+        manager = PropertyDataManager(
+            main_file=config["storage_file"],
+            invalid_file=config["invalid_file"],
+            log_file=config["log_file"]
+        )
+        return manager
+    except Exception as e:
+        logger.error(f"Failed to initialize storage manager: {str(e)}")
+        raise
+
+def get_storage_summary(manager: PropertyDataManager) -> Dict:
+    """Get summary of stored data."""
+    try:
+        return manager.get_summary()
+    except Exception as e:
+        logger.error(f"Failed to get storage summary: {str(e)}")
+        raise
+
+def process_data_file(manager: PropertyDataManager, file_path: str) -> Dict:
+    """Process data file for import or update."""
+    try:
+        # Load CSV with all columns as strings initially
+        df = pd.read_csv(file_path, dtype=str)
+        logger.info(f"Loaded file {file_path} with {len(df)} rows")
+        
+        print("\nInput Data Info:")
+        print(f"Total rows: {len(df)}")
+        print(f"Columns: {df.columns.tolist()}")
+        
+        return manager.add_data(df)
+        
+    except Exception as e:
+        logger.error(f"Failed to process data file: {str(e)}")
+        raise
+
+def export_data(manager: PropertyDataManager, query: str, output_path: str) -> bool:
+    """Export filtered data to CSV file."""
+    try:
+        result = manager.query_data(query)
+        result.to_csv(output_path, index=False)
+        logger.info(f"Exported {len(result)} rows to {output_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to export data: {str(e)}")
+        raise
+
+def delete_data(manager: PropertyDataManager, condition: str) -> Dict:
+    """Delete entries matching condition."""
+    try:
+        return manager.delete_data(condition)
+    except Exception as e:
+        logger.error(f"Failed to delete data: {str(e)}")
         raise

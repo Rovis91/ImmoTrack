@@ -147,11 +147,19 @@ class AddressEnrichment:
                         
                         formatted_address = f"{row['complete_address']} {geo_data['zipcode']} {row['city_name']}"
                         
-                        if dpe_data := self._get_dpe_data(formatted_address):
-                            dpe_success += 1
-                            for key, value in dpe_data.items():
+                        IGNORE_DPE_FIELDS = {
+                        'tr001_modele_dpe_type_libelle', 'geopoint', 'latitude', 'i', 'geo_adresse', 
+                        'rand', 'code_insee_commune_actualise', 'version_methode_dpe', 
+                        'nom_methode_dpe', 'tv016_departement_code', 'longitude', 'id', 'year', 
+                        'price_per_m2', 'initial_price_m2', 'estimation_status', 'zipcode'
+                        }
+
+                    if dpe_data := self._get_dpe_data(formatted_address):
+                        dpe_success += 1
+                        for key, value in dpe_data.items():
+                            if key not in IGNORE_DPE_FIELDS: 
                                 df.at[idx, f'dpe_{key}'] = value
-                                
+                                                        
                 except Exception as e:
                     logger.error(f"Error processing row {idx}: {str(e)}")
                     continue
