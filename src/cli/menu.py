@@ -10,6 +10,8 @@ from .command_handlers import (
     init_storage_manager, get_storage_summary, process_data_file,
     export_data, delete_data
 )
+from src.email.email_service import EmailService
+from src.email.customer_service import CustomerEmailService
 console = Console()
 
 def resolve_path(file_path: str, base_dir: Optional[str] = None) -> Path:
@@ -39,8 +41,10 @@ def resolve_path(file_path: str, base_dir: Optional[str] = None) -> Path:
 class Menu:
     def __init__(self):
         self.console = Console()
-        # Get the project root directory (parent of src)
         self.project_root = Path(__file__).parent.parent.parent.resolve()
+        self.customers_dir = self.project_root / "customers"
+        self.email_service = EmailService()
+        self.customer_email_service = CustomerEmailService(self.customers_dir, self.email_service)
         
     def _display_header(self):
         self.console.print(Panel.fit(
@@ -127,6 +131,101 @@ class Menu:
         self.console.print(f"Cities covered: {len(summary['cities'])}")
         self.console.print(f"Storage size: {summary['storage_size']} MB")
 
+    def _display_customer_menu(self):
+        """Handle customer email operations menu."""
+        while True:
+            self.console.print("\n[yellow]Customer Email Operations:[/yellow]")
+            table = Table(show_header=False, box=None)
+            table.add_row("[1]", "List customers")
+            table.add_row("[2]", "Send customer report")
+            table.add_row("[3]", "View customer status")
+            table.add_row("[b]", "Back to main menu")
+            self.console.print(table)
+            
+            choice = Prompt.ask("\nChoose an action", choices=["1", "2", "3", "b"])
+            
+            if choice == "b":
+                break
+                
+            try:
+                if choice == "1":
+                    self._handle_list_customers()
+                elif choice == "2":
+                    self._handle_send_customer_report()
+                elif choice == "3":
+                    self._handle_customer_status()
+                    
+            except Exception as e:
+                self.console.print(f"[red]Error: {str(e)}[/red]")
+
+    def _handle_list_customers(self):
+        """Display list of available customers."""
+        customers = self.customer_email_service.list_customers()
+        
+        if not customers:
+            self.console.print("[yellow]No customers found[/yellow]")
+            return
+            
+        table = Table(title="Available Customers")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("Email")
+        table.add_column("Status")
+        
+        for customer in customers:
+            status_color = "green" if customer['status'] == 'active' else "red"
+            table.add_row(
+                customer['id'],
+                customer['name'],
+                customer['email'],
+                f"[{status_color}]{customer['status']}[/{status_color}]"
+            )
+            
+        self.console.print(table)
+
+    def _handle_send_customer_report(self):
+        """Handle sending report to a specific customer."""
+        # First list customers
+        self._handle_list_customers()
+        
+        # Get customer selection
+        customer_id = Prompt.ask("\nEnter customer ID")
+        
+        try:
+            # Confirm action
+            if Confirm.ask(f"Send report to customer {customer_id}?"):
+                if self.customer_email_service.send_customer_report(customer_id):
+                    self.console.print("[green]Report sent successfully[/green]")
+                else:
+                    self.console.print("[red]Failed to send report[/red]")
+        except ValueError as e:
+            self.console.print(f"[red]Error: {str(e)}[/red]")
+
+    def _handle_customer_status(self):
+        """Display customer status and sending history."""
+        # First list customers
+        self._handle_list_customers()
+        
+        # Get customer selection
+        customer_id = Prompt.ask("\nEnter customer ID")
+        
+        try:
+            config = self.customer_email_service.load_customer_config(customer_id)
+            
+            self.console.print(f"\n[bold]Customer: {config['first_name']} {config['last_name']}[/bold]")
+            self.console.print(f"Email: {config['email']}")
+            self.console.print(f"Status: {config['status']}")
+            self.console.print(f"Subscription started: {config.get('subscription_start_date', 'N/A')}")
+            
+            # Show preferences
+            self.console.print("\n[bold]Preferences:[/bold]")
+            self.console.print(f"Cities: {', '.join(config.get('cities', []))}")
+            self.console.print(f"Property Types: {', '.join(config.get('property_types', []))}")
+            self.console.print(f"Addresses per report: {config.get('addresses_per_report', 'N/A')}")
+            
+        except ValueError as e:
+            self.console.print(f"[red]Error: {str(e)}[/red]")
+
     def _handle_import_update(self, manager):
         """Handle data import or update."""
         file_path = Prompt.ask("Enter path to CSV file")
@@ -180,11 +279,12 @@ class Menu:
             table.add_row("[1]", "Run scraper only")
             table.add_row("[2]", "Run parser only")
             table.add_row("[3]", "Run full process (scrape + parse)")
-            table.add_row("[4]", "Storage Management")  # New option
+            table.add_row("[4]", "Storage Management")
+            table.add_row("[5]", "Customer Operations")
             table.add_row("[q]", "Quit")
             self.console.print(table)
             
-            choice = Prompt.ask("\nChoose an action", choices=["1", "2", "3", "4", "q"])
+            choice = Prompt.ask("\nChoose an action", choices=["1", "2", "3", "4", "5", "q"])
             
             if choice == "q":
                 break
@@ -231,6 +331,9 @@ class Menu:
                 
                 elif choice == "4":
                     self._display_storage_menu(config)
+                
+                elif choice == "5":
+                    self._display_customer_menu()
                             
             except Exception as e:
                 self.console.print(f"[red]Error: {str(e)}[/red]")

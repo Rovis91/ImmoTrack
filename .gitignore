@@ -3,4 +3,5 @@
 *.json
 .py[cod]
 __pycache__/
-.log
+*.log
+test.py
