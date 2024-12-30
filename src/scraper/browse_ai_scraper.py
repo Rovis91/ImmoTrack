@@ -1,3 +1,7 @@
+"""
+A client to interact with the Browse AI API for creating and managing bulk scraping runs.
+"""
+
 import os
 import time
 import logging
@@ -18,11 +22,15 @@ logging.basicConfig(
 
 class BrowseAIClient:
     """
-    A client to interact with the Browse AI API for creating and managing bulk scraping runs.
+    Provides functionality to interact with the Browse AI API for bulk scraping runs.
     """
+
     def __init__(self):
         """
-        Initialize the BrowseAIClient with the API key and robot ID from environment variables.
+        Initialize the BrowseAIClient with API credentials from environment variables.
+
+        Raises:
+            ValueError: If the API key or robot ID is not provided in the environment variables.
         """
         self.api_key = os.getenv('BROWSE_AI_API_KEY')
         if not self.api_key:
@@ -39,7 +47,7 @@ class BrowseAIClient:
 
     def create_bulk_run(self, urls: List[str], elements_limit: int = 100) -> str:
         """
-        Creates a bulk scraping run with a list of URLs and a limit of elements per request.
+        Create a bulk scraping run with specified URLs and element limits.
 
         Args:
             urls (List[str]): List of URLs to scrape.
@@ -49,18 +57,14 @@ class BrowseAIClient:
             str: The ID of the created bulk run.
 
         Raises:
-            requests.HTTPError: If the API request fails.
+            requests.RequestException: If the API request fails.
         """
         logging.info("Creating bulk run with %d URLs and an elements limit of %d.", len(urls), elements_limit)
         
         payload = {
             "title": "Immo Data Scraping",
             "inputParameters": [
-                {
-                    "originUrl": url,
-                    "elements_limit": elements_limit
-                }
-                for url in urls
+                {"originUrl": url, "elements_limit": elements_limit} for url in urls
             ]
         }
 
@@ -80,16 +84,16 @@ class BrowseAIClient:
 
     def get_bulk_run_status(self, bulk_run_id: str) -> Dict:
         """
-        Retrieves the status of a bulk run.
+        Retrieve the status of a bulk scraping run.
 
         Args:
-            bulk_run_id (str): The ID of the bulk run to check.
+            bulk_run_id (str): The ID of the bulk run.
 
         Returns:
-            Dict: The status of the bulk run.
+            Dict: The status details of the bulk run.
 
         Raises:
-            requests.HTTPError: If the API request fails.
+            requests.RequestException: If the API request fails.
         """
         logging.info("Fetching status for bulk run ID: %s", bulk_run_id)
         
@@ -106,23 +110,26 @@ class BrowseAIClient:
 
     def wait_for_bulk_run(self, bulk_run_id: str, check_interval: int = 60) -> Dict:
         """
-        Waits for a bulk run to complete by periodically checking its status.
+        Wait until the specified bulk run is completed.
 
         Args:
             bulk_run_id (str): The ID of the bulk run to monitor.
             check_interval (int): Time in seconds between status checks.
 
         Returns:
-            Dict: The final status of the bulk run.
+            Dict: Final status of the bulk run, including task details.
+
+        Raises:
+            Exception: If there is an error during monitoring or task fetching.
         """
         logging.info("Waiting for bulk run ID: %s to complete.", bulk_run_id)
         
         while True:
             try:
-                # Get all pages of tasks for this bulk run
                 all_tasks = []
                 current_page = 1
                 
+                # Fetch task details across pages
                 while True:
                     response = requests.get(
                         f"{self.base_url}/{self.robot_id}/bulk-runs/{bulk_run_id}",
@@ -139,10 +146,9 @@ class BrowseAIClient:
                         break
                     current_page += 1
                 
-                # Check if all tasks are complete (either successful or failed)
+                # Check for task completion
                 pending_tasks = [
-                    task for task in all_tasks 
-                    if task["status"] not in ["successful", "failed"]
+                    task for task in all_tasks if task["status"] not in ["successful", "failed"]
                 ]
                 
                 if not pending_tasks:
@@ -165,25 +171,28 @@ class BrowseAIClient:
         check_interval: int = 60
     ) -> List[Dict]:
         """
-        Fetch and save results from recent Browse AI searches with pagination.
-        
+        Fetch and save results from recent bulk scraping runs.
+
         Args:
-            hours_back: Number of hours to look back
-            output_dir: Directory to save raw data
-            check_interval: Interval between status checks in seconds
-            
+            hours_back (int): Look back period in hours for bulk runs.
+            output_dir (str): Directory to save fetched results.
+            check_interval (int): Time in seconds between checks for pending tasks.
+
         Returns:
-            List[Dict]: List of all successful tasks
+            List[Dict]: List of all successfully fetched tasks.
+
+        Raises:
+            Exception: If there is an error during result fetching or saving.
         """
         os.makedirs(output_dir, exist_ok=True)
         start_time = int((datetime.now() - timedelta(hours=hours_back)).timestamp() * 1000)
         
         try:
-            # Get initial bulk runs list
             logging.info(f"Fetching bulk runs from the last {hours_back} hours...")
             all_bulk_runs = []
             page = 1
             
+            # Retrieve bulk runs
             while True:
                 response = requests.get(
                     f"{self.base_url}/{self.robot_id}/bulk-runs",
@@ -193,10 +202,8 @@ class BrowseAIClient:
                 response.raise_for_status()
                 data = response.json()["result"]
                 
-                # Filter bulk runs by time
                 bulk_runs = [
-                    run for run in data["items"] 
-                    if run["createdAt"] >= start_time
+                    run for run in data["items"] if run["createdAt"] >= start_time
                 ]
                 all_bulk_runs.extend(bulk_runs)
                 
@@ -205,22 +212,20 @@ class BrowseAIClient:
                 page += 1
             
             if not all_bulk_runs:
-                logging.info("No recent bulk runs found")
+                logging.info("No recent bulk runs found.")
                 return []
             
-            # Process each bulk run with pagination
+            # Process bulk runs
             all_results = []
             for bulk_run in all_bulk_runs:
                 bulk_run_id = bulk_run["id"]
                 timestamp = datetime.fromtimestamp(bulk_run["createdAt"]/1000)
                 logging.info(f"Processing bulk run {bulk_run_id} from {timestamp}")
                 
-                # Wait until all tasks are complete
                 while True:
                     current_page = 1
                     bulk_run_tasks = []
                     
-                    # Get all pages of tasks for this bulk run
                     while True:
                         response = requests.get(
                             f"{self.base_url}/{self.robot_id}/bulk-runs/{bulk_run_id}",
@@ -237,17 +242,13 @@ class BrowseAIClient:
                             break
                         current_page += 1
                     
-                    # Check if all tasks are complete
                     pending_tasks = [
-                        task for task in bulk_run_tasks 
-                        if task["status"] not in ["successful", "failed"]
+                        task for task in bulk_run_tasks if task["status"] not in ["successful", "failed"]
                     ]
                     
                     if not pending_tasks:
-                        # Save complete bulk run data
                         output_file = os.path.join(
-                            output_dir,
-                            f"browse_ai_data_{bulk_run_id}_{timestamp:%Y%m%d_%H%M%S}.json"
+                            output_dir, f"browse_ai_data_{bulk_run_id}_{timestamp:%Y%m%d_%H%M%S}.json"
                         )
                         
                         complete_data = {
@@ -262,11 +263,8 @@ class BrowseAIClient:
                             json.dump(complete_data, f, indent=2)
                         
                         logging.info(f"Saved data to {output_file}")
-                        
-                        # Add successful tasks to results
                         successful_tasks = [
-                            task for task in bulk_run_tasks 
-                            if task["status"] == "successful"
+                            task for task in bulk_run_tasks if task["status"] == "successful"
                         ]
                         all_results.extend(successful_tasks)
                         break
@@ -274,12 +272,9 @@ class BrowseAIClient:
                     logging.info(f"Waiting for {len(pending_tasks)} tasks to complete...")
                     time.sleep(check_interval)
             
-            logging.info(f"Retrieved {len(all_results)} successful tasks from {len(all_bulk_runs)} bulk runs")
+            logging.info(f"Retrieved {len(all_results)} successful tasks from {len(all_bulk_runs)} bulk runs.")
             return all_results
         
-        except requests.exceptions.RequestException as e:
-            logging.error(f"API request failed: {e}")
-            raise
         except Exception as e:
             logging.error(f"An error occurred: {e}")
             raise

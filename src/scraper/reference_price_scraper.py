@@ -15,12 +15,14 @@ logger = logging.getLogger(__name__)
 
 class ReferencePriceScraper(Scraper):
     """
-    Scraper for fetching current market prices from MeilleursAgents.
-    Inherits from base Scraper class and specializes in price data extraction.
+    A scraper for extracting current market prices from MeilleursAgents.
+    Extends the base Scraper class with specific logic for price data.
     """
 
     def __init__(self) -> None:
-        """Initialize scraper with MeilleursAgents specific configuration."""
+        """
+        Initialize the ReferencePriceScraper with MeilleursAgents-specific settings.
+        """
         super().__init__(
             base_url="https://www.meilleursagents.com/prix-immobilier",
             scraper_type=ScraperType.MANUAL
@@ -29,13 +31,13 @@ class ReferencePriceScraper(Scraper):
 
     def _clean_price_text(self, text: str) -> float:
         """
-        Clean and convert price text to float.
+        Clean and convert raw price text into a float value.
 
         Args:
-            text: Raw price text from HTML
+            text (str): Raw price text extracted from HTML.
 
         Returns:
-            float: Cleaned price value
+            float: Cleaned and converted price value.
         """
         return float(
             text.strip()
@@ -46,13 +48,17 @@ class ReferencePriceScraper(Scraper):
 
     def _parse_prices(self, html: str) -> Optional[Dict[str, float]]:
         """
-        Parse HTML content to extract property prices.
+        Extract apartment and house prices from HTML content.
 
         Args:
-            html: Raw HTML content from the page
+            html (str): Raw HTML content from the webpage.
 
         Returns:
-            Optional[Dict[str, float]]: Dictionary containing apartment and house prices
+            Optional[Dict[str, float]]: A dictionary containing:
+                - apartment_price: Average price per m² for apartments.
+                - house_price: Average price per m² for houses.
+                - timestamp: ISO 8601 timestamp of the parsing operation.
+            Returns None if parsing fails or required elements are missing.
         """
         try:
             soup = BeautifulSoup(html, 'lxml')
@@ -88,17 +94,18 @@ class ReferencePriceScraper(Scraper):
 
     async def get_city_prices(self, city: str, zipcode: str) -> Optional[Dict[str, float]]:
         """
-        Fetch current market prices for a specific city.
+        Fetch the current market prices for a given city.
 
         Args:
-            city: City name
-            zipcode: City postal code
+            city (str): The name of the city.
+            zipcode (str): The postal code of the city.
 
         Returns:
-            Optional[Dict[str, float]]: Dictionary containing:
-                - apartment_price: Average price per m² for apartments
-                - house_price: Average price per m² for houses
-                - timestamp: ISO format timestamp of the fetch
+            Optional[Dict[str, float]]: A dictionary containing:
+                - apartment_price: Average price per m² for apartments.
+                - house_price: Average price per m² for houses.
+                - timestamp: ISO 8601 timestamp of the operation.
+            Returns None if the fetch or parsing fails.
         """
         url = f"{self.base_url}/{city.lower()}-{zipcode}/"
         logger.info(f"Fetching prices for {city} ({zipcode})")

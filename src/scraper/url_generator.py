@@ -13,7 +13,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class PropertyType(Enum):
-    """Available property types with their codes."""
+    """Defines available property types with corresponding codes."""
     HOUSE = "1"
     APARTMENT = "2"
     LAND = "4"
@@ -21,7 +21,7 @@ class PropertyType(Enum):
     OTHER = "5"
 
 class SearchType(Enum):
-    """Predefined search type combinations."""
+    """Predefined combinations of property types for searches."""
     ALL_TYPES = ("Tous types de biens ensemble", [
         PropertyType.HOUSE.value,
         PropertyType.APARTMENT.value,
@@ -42,7 +42,7 @@ class SearchType(Enum):
 
 @dataclass
 class SearchParameters:
-    """Search parameters for URL generation."""
+    """Holds the configurable parameters for URL generation."""
     min_price: int = 0
     max_price: int = 25_000_000
     min_surface: int = 0
@@ -56,11 +56,11 @@ class SearchParameters:
 
 class UrlGenerator:
     """
-    Generates URLs for property scraping based on search parameters.
+    Generates URLs for property scraping using configurable search parameters.
     """
-    
+
     def __init__(self):
-        """Initialize URL generator with French month names."""
+        """Initialize the URL generator with French month names."""
         self.month_names_fr = {
             1: 'Janvier', 2: 'Février', 3: 'Mars', 4: 'Avril', 5: 'Mai',
             6: 'Juin', 7: 'Juillet', 8: 'Août', 9: 'Septembre',
@@ -69,16 +69,16 @@ class UrlGenerator:
         
     def _parse_date(self, date_str: str) -> datetime:
         """
-        Parse date string in MM/YYYY format.
-        
+        Parse a date string in MM/YYYY format.
+
         Args:
-            date_str: Date string in MM/YYYY format
-            
+            date_str (str): Date string in MM/YYYY format.
+
         Returns:
-            datetime object
-            
+            datetime: Parsed date object.
+
         Raises:
-            ValueError: If date format is invalid
+            ValueError: If the date format is invalid.
         """
         try:
             return datetime.strptime(date_str, '%m/%Y')
@@ -90,25 +90,20 @@ class UrlGenerator:
     def _validate_date_range(
         self,
         start_date: datetime,
-        end_date: datetime,
+        end_date: datetime
     ) -> None:
         """
-        Validate date range constraints.
-        
+        Validate that the start date is before the end date.
+
         Args:
-            start_date: Start date
-            end_date: End date
-            max_months: Maximum allowed months between dates
-            
+            start_date (datetime): Start date.
+            end_date (datetime): End date.
+
         Raises:
-            ValueError: If date range is invalid
+            ValueError: If the start date is after the end date.
         """
         if start_date > end_date:
-            raise ValueError("Start date must be before end date")
-            
-        months_diff = (end_date.year - start_date.year) * 12 + (
-            end_date.month - start_date.month
-        )
+            raise ValueError("Start date must be before end date.")
 
     def generate_base_params(
         self,
@@ -117,15 +112,15 @@ class UrlGenerator:
         date_fr: str
     ) -> Dict:
         """
-        Generate base URL parameters.
-        
+        Generate the base query parameters for a single URL.
+
         Args:
-            params: Search parameters
-            property_type: Property type code
-            date_fr: French format date string
-            
+            params (SearchParameters): The search parameters.
+            property_type (str): Property type code.
+            date_fr (str): Date string in French format.
+
         Returns:
-            Dictionary of URL parameters
+            Dict: Dictionary of query parameters for the URL.
         """
         return {
             'minprice': [str(params.min_price)],
@@ -153,47 +148,47 @@ class UrlGenerator:
         elements_limit: int = 100
     ) -> List[Tuple[str, int]]:
         """
-        Generate URLs for property scraping.
-        
+        Generate a list of URLs for property scraping.
+
         Args:
-            base_url: Base URL for the property website
-            start_date: Start date in MM/YYYY format
-            end_date: End date in MM/YYYY format
-            search_type: Type of property search to perform
-            params: Optional search parameters
-            elements_limit: Maximum number of elements per page
-            
+            base_url (str): Base URL of the property website.
+            start_date (str): Start date in MM/YYYY format.
+            end_date (str): End date in MM/YYYY format.
+            search_type (SearchType): Type of property search.
+            params (Optional[SearchParameters]): Additional search parameters.
+            elements_limit (int): Maximum number of elements to scrape per page.
+
         Returns:
-            List of tuples containing (url, elements_limit)
-            
+            List[Tuple[str, int]]: A list of tuples, each containing a URL and its element limit.
+
         Raises:
-            ValueError: If dates or parameters are invalid
+            ValueError: If the date range or parameters are invalid.
         """
-        # Parse and validate dates
+        # Parse and validate the date range
         start = self._parse_date(start_date)
         end = self._parse_date(end_date)
         self._validate_date_range(start, end)
-        
-        # Use default parameters if none provided
+
+        # Use default parameters if none are provided
         params = params or SearchParameters()
-        
-        # Parse base URL
+
+        # Parse the base URL
         parsed = urllib.parse.urlparse(base_url)
         urls = []
-        
+
         # Generate URLs for each property type and month
         for property_type in search_type.property_types:
             current = start
             while current <= end:
                 month_fr = self.month_names_fr[current.month]
                 date_fr = f"{month_fr} {current.year}"
-                
-                # Generate parameters
+
+                # Generate query parameters
                 query_params = self.generate_base_params(
                     params, property_type, date_fr
                 )
-                
-                # Build URL
+
+                # Build the full URL
                 query = urllib.parse.urlencode(query_params, doseq=True)
                 url = urllib.parse.urlunparse((
                     parsed.scheme,
@@ -203,13 +198,13 @@ class UrlGenerator:
                     query,
                     parsed.fragment
                 ))
-                
+
                 urls.append((url, elements_limit))
                 logger.debug(f"Generated URL for {date_fr}: {url}")
-                
+
                 current += relativedelta(months=1)
-        
+
         logger.info(
-            f"Generated {len(urls)} URLs for period {start_date} to {end_date}"
+            f"Generated {len(urls)} URLs for the period {start_date} to {end_date}."
         )
         return urls
