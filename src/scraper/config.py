@@ -12,15 +12,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class BrowserConfig:
-    """Configuration settings specific to browser behavior."""
-    headless: bool = True
-    default_timeout: int = 30000  # Timeout for browser actions in milliseconds
-    navigation_timeout: int = 60000  # Timeout for navigation actions in milliseconds
-    viewport_width: int = 1920  # Width of the browser viewport
-    viewport_height: int = 1080  # Height of the browser viewport
-    user_agent: str = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 @dataclass
 class ScrapingConfig:
@@ -51,63 +42,64 @@ class Config:
     Manages configuration for the scraper, combining environment variables and JSON files.
     """
 
-    def __init__(self, config_path: Optional[str] = None, env_file: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        env_file: Optional[str] = None
+    ):
         """
-        Initialize the configuration class.
-
+        Initialize configuration from files and environment.
+        
         Args:
-            config_path (Optional[str]): Path to the JSON configuration file.
-            env_file (Optional[str]): Path to a .env file containing environment variables.
+            config_path: Path to JSON configuration file
+            env_file: Path to .env file
         """
-        # Load environment variables from .env file if provided
+        # Load environment variables if .env file provided
         if env_file:
             from dotenv import load_dotenv
             load_dotenv(env_file)
-
-        # Default configurations
-        self.browser = BrowserConfig()
+            
+        # Initialize base configuration
+        self.proxy = False  # Default proxy setting
         self.scraping = ScrapingConfig()
         self.selectors = WebsiteSelectors()
-
-        # Override defaults with JSON file if provided
+        
+        # Load from JSON if provided
         if config_path:
             self._load_config(config_path)
-
-        # Ensure the output directory exists
+            
+        # Ensure output directory exists
         self._ensure_output_dir()
 
     def _load_config(self, config_path: str) -> None:
         """
-        Load configuration values from a JSON file.
-
+        Load configuration from JSON file.
+        
         Args:
-            config_path (str): Path to the JSON configuration file.
+            config_path: Path to configuration file
         """
         try:
             with open(config_path, 'r') as f:
                 config_data = json.load(f)
-
-            # Update browser configurations
-            if 'browser' in config_data:
-                for key, value in config_data['browser'].items():
-                    if hasattr(self.browser, key):
-                        setattr(self.browser, key, value)
-
-            # Update scraping configurations
+                
+            # Load base settings
+            self.proxy = config_data.get('proxy', False)
+                
+            # Update scraping config
             if 'scraping' in config_data:
                 for key, value in config_data['scraping'].items():
                     if hasattr(self.scraping, key):
                         setattr(self.scraping, key, value)
-
+                        
             # Update selectors
             if 'selectors' in config_data:
                 for key, value in config_data['selectors'].items():
                     if hasattr(self.selectors, key):
                         setattr(self.selectors, key, value)
-
+                        
         except Exception as e:
-            logger.error(f"Error loading configuration from {config_path}: {str(e)}")
-            logger.info("Using default configuration.")
+            logger.error(f"Error loading configuration: {str(e)}")
+            logger.info("Using default configuration")
 
     def _ensure_output_dir(self) -> None:
         """
