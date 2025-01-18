@@ -10,32 +10,17 @@ from .command_handlers import (
     init_storage_manager, get_storage_summary, process_data_file,
     export_data, delete_data
 )
-from src.email.email_service import EmailService
 from src.email.customer_service import CustomerEmailService
-console = Console()
 
 def resolve_path(file_path: str, base_dir: Optional[str] = None) -> Path:
-    """
-    Resolve a file path, making it absolute if it isn't already.
-    
-    Args:
-        file_path: Path to resolve
-        base_dir: Optional base directory to resolve relative paths against
-        
-    Returns:
-        Path: Resolved absolute path
-    """
     path = Path(file_path)
     
-    # If path is absolute, return it
     if path.is_absolute():
         return path
         
-    # If base_dir provided, resolve against it
     if base_dir:
         return Path(base_dir).resolve() / path
         
-    # Otherwise resolve against current working directory
     return path.resolve()
 
 class Menu:
@@ -43,8 +28,7 @@ class Menu:
         self.console = Console()
         self.project_root = Path(__file__).parent.parent.parent.resolve()
         self.customers_dir = self.project_root / "customers"
-        self.email_service = EmailService()
-        self.customer_email_service = CustomerEmailService(self.customers_dir, self.email_service)
+        self.customer_email_service = CustomerEmailService(self.customers_dir)
         
     def _display_header(self):
         self.console.print(Panel.fit(
@@ -62,21 +46,19 @@ class Menu:
             with open(config_file, 'r') as f:
                 config = json.load(f)
                 
-            # Update required keys
             required_keys = [
                 "base_url", "start_date", "end_date", "search_type",
                 "output_scraper", "dataprocessor_output_dir", "reference_prices_path",
-                "storage_file", "invalid_file", "log_file"  # New storage keys
+                "storage_file", "invalid_file", "log_file"
             ]
             
             missing_keys = [key for key in required_keys if key not in config]
             if missing_keys:
                 raise ValueError(f"Missing required configuration keys: {', '.join(missing_keys)}")
                 
-            # Update path resolution
             path_keys = [
                 'output_scraper', 'dataprocessor_output_dir', 'reference_prices_path',
-                'storage_file', 'invalid_file', 'log_file'  # New storage paths
+                'storage_file', 'invalid_file', 'log_file'
             ]
             for key in path_keys:
                 if key in config:
@@ -89,7 +71,6 @@ class Menu:
             return None
 
     def _display_storage_menu(self, config: Dict):
-        """Handle storage management menu."""
         while True:
             self.console.print("\n[yellow]Storage Management:[/yellow]")
             table = Table(show_header=False, box=None)
@@ -121,7 +102,6 @@ class Menu:
                 self.console.print(f"[red]Error: {str(e)}[/red]")
 
     def _handle_summary(self, manager):
-        """Display data summary."""
         summary = get_storage_summary(manager)
         
         self.console.print("\n[bold]Storage Summary:[/bold]")
@@ -132,17 +112,18 @@ class Menu:
         self.console.print(f"Storage size: {summary['storage_size']} MB")
 
     def _display_customer_menu(self):
-        """Handle customer email operations menu."""
         while True:
             self.console.print("\n[yellow]Customer Email Operations:[/yellow]")
             table = Table(show_header=False, box=None)
             table.add_row("[1]", "List customers")
-            table.add_row("[2]", "Send customer report")
-            table.add_row("[3]", "View customer status")
+            table.add_row("[2]", "Send for validation")
+            table.add_row("[3]", "Confirm validation")
+            table.add_row("[4]", "Cancel validation")
+            table.add_row("[5]", "View customer status")
             table.add_row("[b]", "Back to main menu")
             self.console.print(table)
             
-            choice = Prompt.ask("\nChoose an action", choices=["1", "2", "3", "b"])
+            choice = Prompt.ask("\nChoose an action", choices=["1", "2", "3", "4", "5", "b"])
             
             if choice == "b":
                 break
@@ -151,15 +132,18 @@ class Menu:
                 if choice == "1":
                     self._handle_list_customers()
                 elif choice == "2":
-                    self._handle_send_customer_report()
+                    self._handle_send_for_validation()
                 elif choice == "3":
+                    self._handle_confirm_validation()
+                elif choice == "4":
+                    self._handle_cancel_validation()
+                elif choice == "5":
                     self._handle_customer_status()
                     
             except Exception as e:
                 self.console.print(f"[red]Error: {str(e)}[/red]")
 
     def _handle_list_customers(self):
-        """Display list of available customers."""
         customers = self.customer_email_service.list_customers()
         
         if not customers:
@@ -183,51 +167,67 @@ class Menu:
             
         self.console.print(table)
 
-    def _handle_send_customer_report(self):
-        """Handle sending report to a specific customer."""
-        # First list customers
+    def _handle_send_for_validation(self):
         self._handle_list_customers()
-        
-        # Get customer selection
         customer_id = Prompt.ask("\nEnter customer ID")
         
         try:
-            # Confirm action
-            if Confirm.ask(f"Send report to customer {customer_id}?"):
-                if self.customer_email_service.send_customer_report(customer_id):
-                    self.console.print("[green]Report sent successfully[/green]")
-                else:
-                    self.console.print("[red]Failed to send report[/red]")
+            if self.customer_email_service.send_for_validation(customer_id):
+                self.console.print("[green]Properties sent for validation[/green]")
+            else:
+                self.console.print("[red]Failed to send for validation[/red]")
+        except ValueError as e:
+            self.console.print(f"[red]Error: {str(e)}[/red]")
+
+    def _handle_confirm_validation(self):
+        self._handle_list_customers()
+        customer_id = Prompt.ask("\nEnter customer ID")
+        
+        try:
+            if self.customer_email_service.confirm_validation(customer_id):
+                self.console.print("[green]Validation confirmed, email sent to customer[/green]")
+            else:
+                self.console.print("[red]Failed to confirm validation[/red]")
+        except ValueError as e:
+            self.console.print(f"[red]Error: {str(e)}[/red]")
+
+    def _handle_cancel_validation(self):
+        self._handle_list_customers()
+        customer_id = Prompt.ask("\nEnter customer ID")
+        
+        try:
+            if self.customer_email_service.cancel_validation(customer_id):
+                self.console.print("[green]Validation cancelled successfully[/green]")
+            else:
+                self.console.print("[red]Failed to cancel validation[/red]")
         except ValueError as e:
             self.console.print(f"[red]Error: {str(e)}[/red]")
 
     def _handle_customer_status(self):
-        """Display customer status and sending history."""
-        # First list customers
         self._handle_list_customers()
-        
-        # Get customer selection
         customer_id = Prompt.ask("\nEnter customer ID")
         
         try:
             config = self.customer_email_service.load_customer_config(customer_id)
+            pending = self.customer_email_service._get_pending_properties(customer_id)
             
             self.console.print(f"\n[bold]Customer: {config['first_name']} {config['last_name']}[/bold]")
             self.console.print(f"Email: {config['email']}")
             self.console.print(f"Status: {config['status']}")
             self.console.print(f"Subscription started: {config.get('subscription_start_date', 'N/A')}")
             
-            # Show preferences
             self.console.print("\n[bold]Preferences:[/bold]")
             self.console.print(f"Cities: {', '.join(config.get('cities', []))}")
             self.console.print(f"Property Types: {', '.join(config.get('property_types', []))}")
             self.console.print(f"Addresses per report: {config.get('addresses_per_report', 'N/A')}")
             
+            if pending:
+                self.console.print(f"\n[bold]Pending Validations:[/bold] {len(pending)} properties")
+            
         except ValueError as e:
             self.console.print(f"[red]Error: {str(e)}[/red]")
 
     def _handle_import_update(self, manager):
-        """Handle data import or update."""
         file_path = Prompt.ask("Enter path to CSV file")
         file_path = resolve_path(file_path, self.project_root)
         
@@ -242,11 +242,10 @@ class Menu:
                 self.console.print(f"{key}: {value}")
 
     def _handle_export(self, manager):
-        """Handle data export with query."""
         self.console.print("\n[bold]Query Examples:[/bold]")
-        self.console.print("- city == 'PARIS' and price > 200000")
-        self.console.print("- sale_date >= '01/01/2023' and rooms > 2")
-        self.console.print("- city in ['PARIS', 'LYON'] and surface > 50")
+        self.console.print("city == 'PARIS' and price > 200000")
+        self.console.print("sale_date >= '01/01/2023' and rooms > 2")
+        self.console.print("city in ['PARIS', 'LYON'] and surface > 50")
         
         query = Prompt.ask("\nEnter query condition")
         output_path = Prompt.ask("Enter output file path")
@@ -256,10 +255,9 @@ class Menu:
             self.console.print("[green]Data exported successfully[/green]")
 
     def _handle_delete(self, manager):
-        """Handle data deletion."""
         self.console.print("\n[bold]Delete condition examples:[/bold]")
-        self.console.print("- city == 'PARIS'")
-        self.console.print("- price < 100000")
+        self.console.print("city == 'PARIS'")
+        self.console.print("price < 100000")
         
         condition = Prompt.ask("\nEnter deletion condition")
         
@@ -270,7 +268,6 @@ class Menu:
                 self.console.print(f"{key}: {value}")
                                         
     async def start(self):
-        """Main menu loop."""
         while True:
             self._display_header()
             
@@ -289,9 +286,10 @@ class Menu:
             if choice == "q":
                 break
 
-            config = self._load_config("config/scraping_config.json")
-            if not config:
-                continue
+            if choice in ["1", "2", "3", "4"]:
+                config = self._load_config("config/scraping_config.json")
+                if not config:
+                    continue
 
             try:
                 if choice == "1":
@@ -317,7 +315,7 @@ class Menu:
                     config["parser_input"] = str(input_path)
                     
                     if Confirm.ask("Start parsing with loaded config?"):
-                        if await start_parser(config):  # Ajout du await ici
+                        if await start_parser(config):
                             self.console.print(f"[green]Parsing completed. Results saved to: {config['dataprocessor_output_dir']}[/green]")
                         else:
                             self.console.print("[red]Parsing failed[/red]")

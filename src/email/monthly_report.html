@@ -3,6 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            color: #383838;
+        }
+        th, td {
+            padding: 10px;
+            border: 1px solid #dddddd;
+            text-align: center;
+            word-wrap: break-word;
+        }
+        th {
+            background-color: #272263;
+            color: #ffffff;
+        }
+        td {
+            background-color: #f9f9f9;
+        }
+        th[colspan] {
+            text-align: center;
+        }
+        table th.dynamic-width {
+            width: auto;
+        }
+    </style>
 </head>
 <body style="font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4;">
     <div style="max-width: 1200px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);">
@@ -16,42 +43,45 @@
         <div style="padding: 20px; color: #383838; line-height: 1.6;">
             <h2 style="font-size: 18px; color: #272263;">Rapport Mensuel d'Adresses</h2>
             <p style="margin: 10px 0;"><strong>Cher {{ user_data.first_name }} {{ user_data.last_name }},</strong></p>
-            <p style="margin: 10px 0;">Nous sommes ravis de vous communiquer les adresses qui ont de fortes probabilités d'être mises sur le marché prochainement dans votre secteur :</p>
+            <p style="margin: 10px 0;">Voici les adresses triées par profit (différence entre prix estimé et prix de vente) :</p>
             
             <!-- Table Section -->
             <div style="margin: 20px 0; overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #383838;">
+                <table>
                     <!-- Meta Headers -->
                     <tr>
-                        <th colspan="3" style="background-color: #1a1745; color: #ffffff; text-align: center; padding: 10px; border: 1px solid #dddddd;">Informations du bien</th>
-                        <th colspan="2" style="background-color: #1a1745; color: #ffffff; text-align: center; padding: 10px; border: 1px solid #dddddd;">Informations financières</th>
-                        <th colspan="2" style="background-color: #1a1745; color: #ffffff; text-align: center; padding: 10px; border: 1px solid #dddddd;">Performance énergétique</th>
-                        <th colspan="1" style="background-color: #1a1745; color: #ffffff; text-align: center; padding: 10px; border: 1px solid #dddddd;">Date</th>
+                        <th colspan="5" class="dynamic-width">Informations du bien</th>
+                        <th colspan="3" class="dynamic-width">Informations financières</th>
+                        <th colspan="2" class="dynamic-width">Performance énergétique</th>
                     </tr>
                     
                     <!-- Column Headers -->
                     <tr>
-                        <th style="background-color: #272263; color: #ffffff; text-align: left; padding: 10px;">Adresse</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: center; padding: 10px;">Pièces</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: center; padding: 10px;">Surface (m²)</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: right; padding: 10px;">Prix d'acquisition</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: right; padding: 10px;">Prix estimé</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: center; padding: 10px;">Classe DPE</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: center; padding: 10px;">Classe GES</th>
-                        <th style="background-color: #272263; color: #ffffff; text-align: center; padding: 10px;">Date</th>
+                        <th class="dynamic-width">Adresse</th>
+                        <th class="dynamic-width">Type</th>
+                        <th class="dynamic-width">Pièces</th>
+                        <th class="dynamic-width">Surface (m²)</th>
+                        <th class="dynamic-width">Profit estimé</th>
+                        <th class="dynamic-width">Prix historique</th>
+                        <th class="dynamic-width">Date vente</th>
+                        <th class="dynamic-width">Prix estimé actuel</th>
+                        <th class="dynamic-width">Classe DPE</th>
+                        <th class="dynamic-width">Classe GES</th>
                     </tr>
                     
                     <!-- Data Rows -->
-                    {% for property in properties_data %}
-                    <tr style="background-color: #f9f9f9;">
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: left;">{{ property.complete_address }}, {{ property.city_name }}</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: center;">{{ property.rooms }}</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: center;">{{ property.surface_area }} m²</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: right;">{{ property.price|format_price }}</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: right;">{{ (property.estimated_current_price_per_m2 * property.surface_area)|round|format_price }}</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: center;">{{ property.dpe_energy_class|default('N/A') }}</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: center;">{{ property.dpe_ges_class|default('N/A') }}</td>
-                        <td style="border: 1px solid #dddddd; padding: 8px; text-align: center;">{{ property.mutation_date }}</td>
+                    {% for property in properties_data|sort(attribute="profit", reverse=True) %}
+                    <tr>
+                        <td>{{ property.address or '' }}, {{ property.city or '' }}</td>
+                        <td>{{ property.type or '' }}</td>
+                        <td>{{ property.rooms or '' }}</td>
+                        <td>{{ property.surface|int or '' }}</td>
+                        <td>{{ (property.estimated_price - property.price)|format_price or '' }}</td>
+                        <td>{{ property.price|format_price or '' }}</td>
+                        <td>{{ property.sale_date or '' }}</td>
+                        <td>{{ property.estimated_price|format_price or '' }}</td>
+                        <td>{{ property.dpe_energy_class or '' }}</td>
+                        <td>{{ property.dpe_ges_class or '' }}</td>
                     </tr>
                     {% endfor %}
                 </table>
