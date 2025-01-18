@@ -1,13 +1,16 @@
 """
-Base processor module with common data loading and saving functionality.
+Orchestrator for the complete data processing pipeline.
+Manages the flow between parsing, geocoding, DPE enrichment and pricing.
 """
 import json
+import pandas as pd
 import logging
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Union
-import pandas as pd
+from typing import Dict, Any, Optional
+
 
 logger = logging.getLogger(__name__)
+
 
 class ProcessorBase:
     """Base class for all data processors with common data handling."""
@@ -109,8 +112,7 @@ class DataProcessor:
     """Orchestrator for the complete data processing pipeline."""
     
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize data processor with configuration.
+        """Initialize data processor with configuration.
         
         Args:
             config: Dictionary containing processing configuration
@@ -120,16 +122,16 @@ class DataProcessor:
                 Optional keys:
                 - keep_intermediate: Whether to keep intermediate files
         """
-        from .data_parser import DataParser
-        from .address_enrichment import AddressEnrichment
-        from .price_estimator import PriceEstimator
-        
         self.config = config
         self.output_dir = Path(config['output_dir'])
-        
+        from .data_parser import DataParser
+        from .geocoding_enrichment import GeocodingService
+        from .dpe_enrichment import DPEService
+        from .price_estimator import PriceEstimator
         # Initialize processors
         self.parser = DataParser()
-        self.enricher = AddressEnrichment()
+        self.geocoder = GeocodingService()
+        self.dpe_service = DPEService()
         self.estimator = PriceEstimator(config['reference_prices_path'])
         
         # Ensure output directory exists
@@ -140,8 +142,7 @@ class DataProcessor:
         return self.output_dir / f"{stage}.{extension}"
 
     async def process(self, input_json: str) -> bool:
-        """
-        Run complete processing pipeline.
+        """Run complete processing pipeline.
         
         Args:
             input_json: Path to input JSON file from scraper
@@ -152,6 +153,7 @@ class DataProcessor:
         try:
             # Define stage file paths
             parsed_path = self._get_file_path('parsed')
+            geocoded_path = self._get_file_path('geocoded')
             enriched_path = self._get_file_path('enriched')
             final_path = self._get_file_path('final')
             
@@ -162,14 +164,20 @@ class DataProcessor:
             if not self.parser.process(input_json, str(parsed_path)):
                 logger.error("Parsing step failed")
                 return False
-                
-            # Step 2: Enrich with address data
-            logger.info("Starting enrichment step...")
-            if not self.enricher.process(str(parsed_path), str(enriched_path)):
-                logger.error("Enrichment step failed")
+            
+            # Step 2: Add geocoding data
+            logger.info("Starting geocoding step...")
+            if not self.geocoder.process(str(parsed_path), str(geocoded_path)):
+                logger.error("Geocoding step failed")
                 return False
-                
-            # Step 3: Add price estimates
+            
+            # Step 3: Add DPE data
+            logger.info("Starting DPE enrichment step...")
+            if not await self.dpe_service.process(str(geocoded_path), str(enriched_path)):
+                logger.error("DPE enrichment step failed")
+                return False
+            
+            # Step 4: Add price estimates
             logger.info("Starting price estimation step...")
             if not await self.estimator.process(str(enriched_path), str(final_path)):
                 logger.error("Price estimation step failed")

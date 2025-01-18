@@ -101,6 +101,38 @@ class DataParser(ProcessorBase):
             logger.error(f"Error parsing property: {e}")
             return None
 
+    def _remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove duplicate entries based on address and mutation date.
+        
+        Args:
+            df: DataFrame containing property data
+            
+        Returns:
+            DataFrame with duplicates removed
+        """
+        try:
+            initial_count = len(df)
+            logger.info(f"Removing duplicates from {initial_count} properties...")
+            # Remove duplicates based on address and date
+            df_no_duplicates = df.drop_duplicates(
+                subset=['complete_address', 'mutation_date'],
+                keep='first'
+            )
+            
+            removed_count = initial_count - len(df_no_duplicates)
+            if removed_count > 0:
+                logger.info(
+                    f"Removed {removed_count} duplicate properties "
+                    f"({(removed_count/initial_count)*100:.1f}% of total)"
+                )
+            
+            return df_no_duplicates
+            
+        except Exception as e:
+            logger.error(f"Error removing duplicates: {e}")
+            return df  # Return original DataFrame if deduplication fails
+
     def process(self, input_path: str, output_path: str) -> bool:
         """
         Process raw scraping data and save parsed results.
@@ -129,9 +161,12 @@ class DataParser(ProcessorBase):
             # Convert parsed data to DataFrame
             parsed_df = pd.DataFrame(parsed_properties)
             
+            # Remove duplicates before saving
+            parsed_df = self._remove_duplicates(parsed_df)
+            
             # Log parsing results
-            success_rate = (len(parsed_properties) / total_count * 100) if total_count > 0 else 0
-            logger.info(f"Parsed {len(parsed_properties)}/{total_count} properties ({success_rate:.1f}%)")
+            success_rate = (len(parsed_df) / total_count * 100) if total_count > 0 else 0
+            logger.info(f"Parsed {len(parsed_df)}/{total_count} properties ({success_rate:.1f}%)")
             
             # Save using parent class method
             return self.save_csv(parsed_df, output_path)
