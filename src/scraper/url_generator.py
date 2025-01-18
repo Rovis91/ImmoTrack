@@ -29,6 +29,11 @@ class SearchType(Enum):
         PropertyType.COMMERCIAL.value,
         PropertyType.OTHER.value
     ])
+    ALL_TYPES_SPLIT = ("Tous types de biens séparés", [
+        [PropertyType.HOUSE.value],  # Houses alone
+        [PropertyType.APARTMENT.value],  # Apartments alone
+        [PropertyType.LAND.value, PropertyType.COMMERCIAL.value, PropertyType.OTHER.value]  # Others grouped
+    ])
     HOUSES_AND_APARTMENTS = ("Maisons et appartements ensemble", [
         PropertyType.HOUSE.value,
         PropertyType.APARTMENT.value
@@ -36,9 +41,11 @@ class SearchType(Enum):
     HOUSES_ONLY = ("Maisons uniquement", [PropertyType.HOUSE.value])
     APARTMENTS_ONLY = ("Appartements uniquement", [PropertyType.APARTMENT.value])
 
-    def __init__(self, description: str, property_types: List[str]):
+    def __init__(self, description: str, property_types: List):
         self.description = description
         self.property_types = property_types
+        # Flag to indicate if property types should be treated as separate groups
+        self.is_split = isinstance(property_types[0], list) if property_types else False
 
 @dataclass
 class SearchParameters:
@@ -108,7 +115,7 @@ class UrlGenerator:
     def generate_base_params(
         self,
         params: SearchParameters,
-        property_type: str,
+        property_types: List[str],
         date_fr: str
     ) -> Dict:
         """
@@ -116,7 +123,7 @@ class UrlGenerator:
 
         Args:
             params (SearchParameters): The search parameters.
-            property_type (str): Property type code.
+            property_types (List[str]): List of property type codes.
             date_fr (str): Date string in French format.
 
         Returns:
@@ -133,7 +140,7 @@ class UrlGenerator:
             'maxsurfaceland': [str(params.max_land_surface)],
             'center': [params.location_center],
             'zoom': [str(params.zoom_level)],
-            'propertytypes': [property_type],
+            'propertytypes': property_types,  # Now accepts a list of types
             'minmonthyear': [date_fr],
             'maxmonthyear': [date_fr]
         }
@@ -176,16 +183,22 @@ class UrlGenerator:
         parsed = urllib.parse.urlparse(base_url)
         urls = []
 
-        # Generate URLs for each property type and month
-        for property_type in search_type.property_types:
+        # Handle property types based on whether they should be split or not
+        property_type_groups = (
+            search_type.property_types if search_type.is_split
+            else [[t] for t in search_type.property_types]
+        )
+
+        # Generate URLs for each property type group and month
+        for property_types in property_type_groups:
             current = start
             while current <= end:
                 month_fr = self.month_names_fr[current.month]
                 date_fr = f"{month_fr} {current.year}"
 
-                # Generate query parameters
+                # Generate query parameters with the group of property types
                 query_params = self.generate_base_params(
-                    params, property_type, date_fr
+                    params, property_types, date_fr
                 )
 
                 # Build the full URL
@@ -200,7 +213,7 @@ class UrlGenerator:
                 ))
 
                 urls.append((url, elements_limit))
-                logger.debug(f"Generated URL for {date_fr}: {url}")
+                logger.debug(f"Generated URL for {date_fr} with property types {property_types}: {url}")
 
                 current += relativedelta(months=1)
 
